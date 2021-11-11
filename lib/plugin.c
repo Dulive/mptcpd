@@ -729,8 +729,9 @@ static bool new_local_address(struct mptcpd_plugin_ops const *const ops,
                 true;
 }
 
-static bool delete_local_address(struct mptcpd_plugin_ops const *const ops,
-                                 struct plugin_address_info const *const i)
+static bool delete_local_address(
+        struct mptcpd_plugin_ops const *const ops,
+        struct plugin_address_info const *const i)
 {
         assert(ops != NULL);
 
@@ -739,8 +740,26 @@ static bool delete_local_address(struct mptcpd_plugin_ops const *const ops,
                 true;
 }
 
-void mptcpd_plugin_new_interface(struct mptcpd_interface const *i,
-                                 void *pm)
+static struct l_queue_entry const *plugins_seek(
+        char const *name,
+        struct l_queue_entry const *entry)
+{
+        while (entry) {
+                struct plugin_info const *const p_info = entry->data;
+
+                if (strcmp(p_info->desc->name, name) == 0)
+                        break;
+
+                entry = entry->next;
+        }
+
+        return entry;
+}
+
+void mptcpd_plugin_new_interface_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct mptcpd_pm *pm)
 {
         struct plugin_interface_info info = {
                 .interface = i,
@@ -749,6 +768,12 @@ void mptcpd_plugin_new_interface(struct mptcpd_interface const *i,
 
         struct l_queue_entry const* entry =
                 l_queue_get_entries(_plugin_infos);
+
+        if (name != NULL) {
+                entry = plugins_seek(name, entry);
+                if (entry == NULL)
+                        return; //l_error || l_warn?
+        }
 
         while (entry) {
                 struct plugin_info const *const p_info = entry->data;
@@ -760,8 +785,10 @@ void mptcpd_plugin_new_interface(struct mptcpd_interface const *i,
         }
 }
 
-void mptcpd_plugin_update_interface(struct mptcpd_interface const *i,
-                                    void *pm)
+void mptcpd_plugin_update_interface_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct mptcpd_pm *pm)
 {
         struct plugin_interface_info info = {
                 .interface = i,
@@ -770,6 +797,12 @@ void mptcpd_plugin_update_interface(struct mptcpd_interface const *i,
 
         struct l_queue_entry const* entry =
                 l_queue_get_entries(_plugin_infos);
+
+        if (name != NULL) {
+                entry = plugins_seek(name, entry);
+                if (entry == NULL)
+                        return; //l_error || l_warn?
+        }
 
         while (entry) {
                 struct plugin_info const *const p_info = entry->data;
@@ -779,10 +812,13 @@ void mptcpd_plugin_update_interface(struct mptcpd_interface const *i,
 
                 entry = entry->next;
         }
+
 }
 
-void mptcpd_plugin_delete_interface(struct mptcpd_interface const *i,
-                                    void *pm)
+void mptcpd_plugin_delete_interface_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct mptcpd_pm *pm)
 {
         struct plugin_interface_info info = {
                 .interface = i,
@@ -792,6 +828,12 @@ void mptcpd_plugin_delete_interface(struct mptcpd_interface const *i,
         struct l_queue_entry const* entry =
                 l_queue_get_entries(_plugin_infos);
 
+        if (name != NULL) {
+                entry = plugins_seek(name, entry);
+                if (entry == NULL)
+                        return; //l_error || l_warn?
+        }
+
         while (entry) {
                 struct plugin_info const *const p_info = entry->data;
 
@@ -800,11 +842,14 @@ void mptcpd_plugin_delete_interface(struct mptcpd_interface const *i,
 
                 entry = entry->next;
         }
+
 }
 
-void mptcpd_plugin_new_local_address(struct mptcpd_interface const *i,
-                                     struct sockaddr const *sa,
-                                     void *pm)
+void mptcpd_plugin_new_local_address_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct sockaddr const *sa,
+        struct mptcpd_pm *pm)
 {
         struct plugin_address_info info = {
                 .interface = i,
@@ -814,6 +859,12 @@ void mptcpd_plugin_new_local_address(struct mptcpd_interface const *i,
 
         struct l_queue_entry const* entry =
                 l_queue_get_entries(_plugin_infos);
+
+        if (name != NULL) {
+                entry = plugins_seek(name, entry);
+                if (entry == NULL)
+                        return; //l_error || l_warn?
+        }
 
         while (entry) {
                 struct plugin_info const *const p_info = entry->data;
@@ -823,11 +874,14 @@ void mptcpd_plugin_new_local_address(struct mptcpd_interface const *i,
 
                 entry = entry->next;
         }
+
 }
 
-void mptcpd_plugin_delete_local_address(struct mptcpd_interface const *i,
-                                        struct sockaddr const *sa,
-                                        void *pm)
+void mptcpd_plugin_delete_local_address_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct sockaddr const *sa,
+        struct mptcpd_pm *pm)
 {
         struct plugin_address_info info = {
                 .interface = i,
@@ -838,6 +892,12 @@ void mptcpd_plugin_delete_local_address(struct mptcpd_interface const *i,
         struct l_queue_entry const* entry =
                 l_queue_get_entries(_plugin_infos);
 
+        if (name != NULL) {
+                entry = plugins_seek(name, entry);
+                if (entry == NULL)
+                        return; //l_error || l_warn?
+        }
+
         while (entry) {
                 struct plugin_info const *const p_info = entry->data;
 
@@ -846,6 +906,39 @@ void mptcpd_plugin_delete_local_address(struct mptcpd_interface const *i,
 
                 entry = entry->next;
         }
+
+}
+
+void mptcpd_plugin_new_interface(struct mptcpd_interface const *i,
+                                 void *pm)
+{
+        mptcpd_plugin_new_interface_flow(NULL, i, pm);
+}
+
+void mptcpd_plugin_update_interface(struct mptcpd_interface const *i,
+                                    void *pm)
+{
+        mptcpd_plugin_update_interface_flow(NULL, i, pm);
+}
+
+void mptcpd_plugin_delete_interface(struct mptcpd_interface const *i,
+                                    void *pm)
+{
+        mptcpd_plugin_delete_interface_flow(NULL, i, pm);
+}
+
+void mptcpd_plugin_new_local_address(struct mptcpd_interface const *i,
+                                     struct sockaddr const *sa,
+                                     void *pm)
+{
+        mptcpd_plugin_new_local_address_flow(NULL, i, sa, pm);
+}
+
+void mptcpd_plugin_delete_local_address(struct mptcpd_interface const *i,
+                                        struct sockaddr const *sa,
+                                        void *pm)
+{
+        mptcpd_plugin_delete_local_address_flow(NULL, i, sa, pm);
 }
 
 /*

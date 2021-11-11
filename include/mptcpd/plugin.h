@@ -345,6 +345,33 @@ MPTCPD_API bool mptcpd_plugin_register_ops(
         char const *name,
         struct mptcpd_plugin_ops const *ops);
 
+MPTCPD_API void mptcpd_plugin_new_interface_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct mptcpd_pm *pm);
+
+MPTCPD_API void mptcpd_plugin_update_interface_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct mptcpd_pm *pm);
+
+MPTCPD_API void mptcpd_plugin_delete_interface_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct mptcpd_pm *pm);
+
+MPTCPD_API void mptcpd_plugin_new_local_address_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct sockaddr const *sa,
+        struct mptcpd_pm *pm);
+
+MPTCPD_API void mptcpd_plugin_delete_local_address_flow(
+        char const *name,
+        struct mptcpd_interface const *i,
+        struct sockaddr const *sa,
+        struct mptcpd_pm *pm);
+
 #ifdef __cplusplus
 }
 #endif
