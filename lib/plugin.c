@@ -56,7 +56,26 @@
  *
  * @todo Consider merging this map the @c plugin_infos queue.
  */
-static struct l_hashmap *_pm_plugins;
+//static struct l_hashmap *_pm_plugins;
+
+/**
+ * @struct plugin_info
+ *
+ * @brief Plugin information
+ */
+struct plugin_info
+{
+        /// Handle returned from call to @c dlopen().
+        void *handle;
+
+        /// Plugin descriptor.
+        struct mptcpd_plugin_desc const *desc;
+
+        struct mptcpd_plugin_ops const *ops;
+};
+
+/// List of @c plugin_info objects.
+static struct l_queue *_plugin_infos;
 
 /**
  * @brief Connection token to path manager plugin operations map.
@@ -120,21 +139,33 @@ static bool check_directory_perms(char const *dir,
         return perms_ok;
 }
 
+static bool compare_plugin_name(void const *a, void const *b)
+{
+        struct plugin_info const *const info = a;
+        char const *name = b;
+        
+        return strcmp(info->desc->name, name) == 0; 
+}
+
 static struct mptcpd_plugin_ops const *name_to_ops(char const *name)
 {
         struct mptcpd_plugin_ops const *ops = _default_ops;
 
         if (name != NULL) {
-                ops = l_hashmap_lookup(_pm_plugins, name);
+                struct plugin_info const *info =
+                        l_queue_find(_plugin_infos, 
+                                     compare_plugin_name, 
+                                     name);
 
-                if (ops == NULL) {
+                if (info == NULL) {
                         ops = _default_ops;
 
                         l_error("Requested path management strategy "
                                 "\"%s\" does not exist.",
                                 name);
                         l_error("Falling back on default.");
-                }
+                } else
+                        ops = info->ops;
 
         }
 
@@ -159,23 +190,6 @@ static struct mptcpd_plugin_ops const *token_to_ops(mptcpd_token_t token)
 // ----------------------------------------------------------------
 //                Plugin Registration and Management
 // ----------------------------------------------------------------
-
-/**
- * @struct plugin_info
- *
- * @brief Plugin information
- */
-struct plugin_info
-{
-        /// Handle returned from call to @c dlopen().
-        void *handle;
-
-        /// Plugin descriptor.
-        struct mptcpd_plugin_desc const *desc;
-};
-
-/// List of @c plugin_info objects.
-static struct l_queue *_plugin_infos;
 
 /**
  * @brief Compare plugin priorities.
@@ -419,17 +433,8 @@ bool mptcpd_plugin_load(char const *dir,
                 return false;
         }
 
-        if (_plugin_infos == NULL)
+        if (_plugin_infos == NULL) {
                 _plugin_infos = l_queue_new();
-
-        if (_pm_plugins == NULL) {
-                _pm_plugins = l_hashmap_string_new();
-
-                /*
-                  No need to check for NULL since
-                  l_hashmap_string_new() abort()s on memory allocation
-                  failure.
-                */
 
                 if (default_name != NULL) {
                         size_t const len = L_ARRAY_SIZE(_default_name);
@@ -447,9 +452,7 @@ bool mptcpd_plugin_load(char const *dir,
                 }
 
                 if (load_plugins(dir, plugins_to_load, pm) != 0
-                    || l_hashmap_isempty(_pm_plugins)) {
-                        l_hashmap_destroy(_pm_plugins, NULL);
-                        _pm_plugins = NULL;
+                    || l_queue_isempty(_plugin_infos)) {
                         unload_plugins(pm);
 
                         return false;  // Plugin load and registration
@@ -475,7 +478,7 @@ bool mptcpd_plugin_load(char const *dir,
                                                   // failure.
         }
 
-        return !l_hashmap_isempty(_pm_plugins);
+        return !l_queue_isempty(_plugin_infos);
 }
 
 void mptcpd_plugin_unload(struct mptcpd_pm *pm)
@@ -487,10 +490,8 @@ void mptcpd_plugin_unload(struct mptcpd_pm *pm)
          *       appear to be a need to support that.
          */
         l_hashmap_destroy(_token_to_ops, NULL);
-        l_hashmap_destroy(_pm_plugins, NULL);
 
         _token_to_ops  = NULL;
-        _pm_plugins  = NULL;
         _default_ops = NULL;
         memset(_default_name, 0, sizeof(_default_name));
 
@@ -522,30 +523,34 @@ bool mptcpd_plugin_register_ops(char const *name,
             && ops->delete_local_address   == NULL)
                 l_warn("No plugin operations were set.");
 
-        bool const first_registration = l_hashmap_isempty(_pm_plugins);
+        struct plugin_info const* info =
+                l_queue_find(_plugin_infos, compare_plugin_name, name);
 
-        bool const registered =
-                l_hashmap_insert(_pm_plugins,
-                                 name,
-                                 (struct mptcpd_plugin_ops *) ops);
+        // not registered (wrong name) 
+        if (info == NULL)
+                return false;
 
-        if (registered) {
-                /*
-                  Set the default plugin operations.
+        //ugly
+        //very dumb
+        struct mptcpd_plugin_ops **ops_addr = 
+                (struct mptcpd_plugin_ops **)&info->ops;
+        *ops_addr = (struct mptcpd_plugin_ops *) ops;
 
-                  If the plugin name matches the default plugin name
-                  (if provided) use the corresponding ops.  Otherwise
-                  fallback on the first set of registered ops,
-                  i.e. those corresponding to a plugin with the most
-                  favorable (lowest) priority.
-                */
-                if (strcmp(_default_name, name) == 0)
-                        _default_ops = ops;
-                else if (first_registration)
-                        _default_ops = ops;
-        }
+        /*
+          Set the default plugin operations.
 
-        return registered;
+          If the plugin name matches the default plugin name
+          (if provided) use the corresponding ops.  Otherwise
+          fallback on the first set of registered ops,
+          i.e. those corresponding to a plugin with the most
+          favorable (lowest) priority.
+        */
+        if (strcmp(_default_name, name) == 0)
+                _default_ops = ops;
+        else if (l_queue_peek_head(_plugin_infos) == info) //dumb
+                _default_ops = ops;
+
+        return true;
 }
 
 // ----------------------------------------------------------------
@@ -684,77 +689,54 @@ struct plugin_interface_info
         struct mptcpd_pm *const pm;
 };
 
-static void new_interface(void const *key, void *value, void *user_data)
+static bool new_interface(struct mptcpd_plugin_ops const *const ops,
+                         struct plugin_interface_info const *const i)
 {
-        (void) key;
+        assert(ops != NULL);
 
-        assert(value != NULL);
-
-        struct mptcpd_plugin_ops     const *const ops = value;
-        struct plugin_interface_info const *const i   = user_data;
-
-        if (ops->new_interface)
-                ops->new_interface(i->interface, i->pm);
+        return ops->new_interface ?
+                ops->new_interface(i->interface, i->pm) :
+                true;
 }
 
-static void update_interface(void const *key,
-                             void *value,
-                             void *user_data)
+static bool update_interface(struct mptcpd_plugin_ops const *const ops,
+                             struct plugin_interface_info const *const i)
 {
-        (void) key;
+        assert(ops != NULL);
 
-        assert(value != NULL);
-
-        struct mptcpd_plugin_ops     const *const ops = value;
-        struct plugin_interface_info const *const i   = user_data;
-
-        if (ops->update_interface)
-                ops->update_interface(i->interface, i->pm);
+        return ops->update_interface ?
+                ops->update_interface(i->interface, i->pm) :
+                true;
 }
 
-static void delete_interface(void const *key,
-                             void *value,
-                             void *user_data)
+static bool delete_interface(struct mptcpd_plugin_ops const *const ops,
+                             struct plugin_interface_info const *const i)
 {
-        (void) key;
+        assert(ops != NULL);
 
-        assert(value != NULL);
-
-        struct mptcpd_plugin_ops     const *const ops = value;
-        struct plugin_interface_info const *const i   = user_data;
-
-        if (ops->delete_interface)
-                ops->delete_interface(i->interface, i->pm);
+        return ops->delete_interface ?
+                ops->delete_interface(i->interface, i->pm) :
+                true;
 }
 
-static void new_local_address(void const *key,
-                              void *value,
-                              void *user_data)
+static bool new_local_address(struct mptcpd_plugin_ops const *const ops,
+                              struct plugin_address_info const *const i)
 {
-        (void) key;
+        assert(ops != NULL);
 
-        assert(value != NULL);
-
-        struct mptcpd_plugin_ops   const *const ops = value;
-        struct plugin_address_info const *const i   = user_data;
-
-        if (ops->new_local_address)
-                ops->new_local_address(i->interface, i->address, i->pm);
+        return ops->new_local_address ?
+                ops->new_local_address(i->interface, i->address, i->pm) :
+                true;
 }
 
-static void delete_local_address(void const *key,
-                                 void *value,
-                                 void *user_data)
+static bool delete_local_address(struct mptcpd_plugin_ops const *const ops,
+                                 struct plugin_address_info const *const i)
 {
-        (void) key;
+        assert(ops != NULL);
 
-        assert(value != NULL);
-
-        struct mptcpd_plugin_ops    const *const ops = value;
-        struct plugin_address_info  const *const i   = user_data;
-
-        if (ops->delete_local_address)
-                ops->delete_local_address(i->interface, i->address, i->pm);
+        return ops->delete_local_address ?
+                ops->delete_local_address(i->interface, i->address, i->pm) :
+                true;
 }
 
 void mptcpd_plugin_new_interface(struct mptcpd_interface const *i,
@@ -765,7 +747,17 @@ void mptcpd_plugin_new_interface(struct mptcpd_interface const *i,
                 .pm        = pm
         };
 
-        l_hashmap_foreach(_pm_plugins, new_interface, &info);
+        struct l_queue_entry const* entry =
+                l_queue_get_entries(_plugin_infos);
+
+        while (entry) {
+                struct plugin_info const *const p_info = entry->data;
+
+                if (!new_interface(p_info->ops, &info))
+                        break;
+
+                entry = entry->next;
+        }
 }
 
 void mptcpd_plugin_update_interface(struct mptcpd_interface const *i,
@@ -776,7 +768,17 @@ void mptcpd_plugin_update_interface(struct mptcpd_interface const *i,
                 .pm        = pm
         };
 
-        l_hashmap_foreach(_pm_plugins, update_interface, &info);
+        struct l_queue_entry const* entry =
+                l_queue_get_entries(_plugin_infos);
+
+        while (entry) {
+                struct plugin_info const *const p_info = entry->data;
+
+                if (!update_interface(p_info->ops, &info))
+                        break;
+
+                entry = entry->next;
+        }
 }
 
 void mptcpd_plugin_delete_interface(struct mptcpd_interface const *i,
@@ -787,7 +789,17 @@ void mptcpd_plugin_delete_interface(struct mptcpd_interface const *i,
                 .pm        = pm
         };
 
-        l_hashmap_foreach(_pm_plugins, delete_interface, &info);
+        struct l_queue_entry const* entry =
+                l_queue_get_entries(_plugin_infos);
+
+        while (entry) {
+                struct plugin_info const *const p_info = entry->data;
+
+                if (!delete_interface(p_info->ops, &info))
+                        break;
+
+                entry = entry->next;
+        }
 }
 
 void mptcpd_plugin_new_local_address(struct mptcpd_interface const *i,
@@ -800,7 +812,17 @@ void mptcpd_plugin_new_local_address(struct mptcpd_interface const *i,
                 .pm        = pm
         };
 
-        l_hashmap_foreach(_pm_plugins, new_local_address, &info);
+        struct l_queue_entry const* entry =
+                l_queue_get_entries(_plugin_infos);
+
+        while (entry) {
+                struct plugin_info const *const p_info = entry->data;
+
+                if (!new_local_address(p_info->ops, &info))
+                        break;
+
+                entry = entry->next;
+        }
 }
 
 void mptcpd_plugin_delete_local_address(struct mptcpd_interface const *i,
@@ -813,9 +835,18 @@ void mptcpd_plugin_delete_local_address(struct mptcpd_interface const *i,
                 .pm        = pm
         };
 
-        l_hashmap_foreach(_pm_plugins, delete_local_address, &info);
-}
+        struct l_queue_entry const* entry =
+                l_queue_get_entries(_plugin_infos);
 
+        while (entry) {
+                struct plugin_info const *const p_info = entry->data;
+
+                if (!delete_local_address(p_info->ops, &info))
+                        break;
+
+                entry = entry->next;
+        }
+}
 
 /*
   Local Variables:

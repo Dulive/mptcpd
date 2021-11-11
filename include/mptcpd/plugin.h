@@ -281,7 +281,7 @@ struct mptcpd_plugin_ops
          *       addresses on a given network interface may be
          *       retrieved through the @c new_address callback below.
          */
-        void (*new_interface)(struct mptcpd_interface const *i,
+        bool (*new_interface)(struct mptcpd_interface const *i,
                               struct mptcpd_pm *pm);
 
         /**
@@ -289,7 +289,7 @@ struct mptcpd_plugin_ops
          *
          * @param[in] i Network interface information.
          */
-        void (*update_interface)(struct mptcpd_interface const *i,
+        bool (*update_interface)(struct mptcpd_interface const *i,
                                  struct mptcpd_pm *pm);
 
         /**
@@ -297,7 +297,7 @@ struct mptcpd_plugin_ops
          *
          * @param[in] i Network interface information.
          */
-        void (*delete_interface)(struct mptcpd_interface const *i,
+        bool (*delete_interface)(struct mptcpd_interface const *i,
                                  struct mptcpd_pm *pm);
 
         /**
@@ -306,7 +306,7 @@ struct mptcpd_plugin_ops
          * @param[in] i  Network interface information.
          * @param[in] sa Network address   information.
          */
-        void (*new_local_address)(struct mptcpd_interface const *i,
+        bool (*new_local_address)(struct mptcpd_interface const *i,
                                   struct sockaddr const *sa,
                                   struct mptcpd_pm *pm);
 
@@ -316,7 +316,7 @@ struct mptcpd_plugin_ops
          * @param[in] i  Network interface information.
          * @param[in] sa Network address   information.
          */
-        void (*delete_local_address)(struct mptcpd_interface const *i,
+        bool (*delete_local_address)(struct mptcpd_interface const *i,
                                      struct sockaddr const *sa,
                                      struct mptcpd_pm *pm);
         ///@}
