@@ -770,10 +770,10 @@ static struct l_queue_entry const *plugins_seek(
         while (entry) {
                 struct plugin_info const *const p_info = entry->data;
 
+                entry = entry->next;
+
                 if (strcmp(p_info->desc->name, name) == 0)
                         break;
-
-                entry = entry->next;
         }
 
         return entry;
