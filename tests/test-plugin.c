@@ -256,7 +256,7 @@ static void test_null_plugin_ops(void const *test_data)
         bool const loaded = mptcpd_plugin_load(dir, default_plugin, NULL, pm);
         assert(loaded);
 
-        char const name[] = "null ops";
+        char const name[] = "plugin_noop";
         struct mptcpd_plugin_ops const ops = { .new_connection = NULL };
 
         bool registered = mptcpd_plugin_register_ops(name, &ops);
