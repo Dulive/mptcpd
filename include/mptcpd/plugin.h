@@ -345,27 +345,79 @@ MPTCPD_API bool mptcpd_plugin_register_ops(
         char const *name,
         struct mptcpd_plugin_ops const *ops);
 
+/**
+ * @brief Create a new interface event flow
+ *
+ * Creates a new flow of new interface event, starting from the
+ * plugin identified by @a name. 
+ *
+ * @param[in] name Plugin name.
+ * @param[in] i    Network interface information.
+ * @param[in] pm   Opaque pointer to mptcpd path manager object.
+ */
 MPTCPD_API void mptcpd_plugin_new_interface_flow(
         char const *name,
         struct mptcpd_interface const *i,
         struct mptcpd_pm *pm);
 
+/**
+ * @brief Create a update interface envent flow
+ *
+ * Creates a new flow of update interface event, starting from the
+ * plugin identified by @a name. 
+ *
+ * @param[in] name Plugin name.
+ * @param[in] i    Network interface information.
+ * @param[in] pm   Opaque pointer to mptcpd path manager object.
+ */
 MPTCPD_API void mptcpd_plugin_update_interface_flow(
         char const *name,
         struct mptcpd_interface const *i,
         struct mptcpd_pm *pm);
 
+/**
+ * @brief Create a delete interface event flow
+ *
+ * Creates a new flow of delete interface events, starting from the
+ * plugin identified by @a name. 
+ *
+ * @param[in] name Plugin name.
+ * @param[in] i    Network interface information.
+ * @param[in] pm   Opaque pointer to mptcpd path manager object.
+ */
 MPTCPD_API void mptcpd_plugin_delete_interface_flow(
         char const *name,
         struct mptcpd_interface const *i,
         struct mptcpd_pm *pm);
 
+/**
+ * @brief Create a new local address event flow
+ *
+ * Creates a new flow of new local address events, starting from the
+ * plugin identified by @a name. 
+ *
+ * @param[in] name Plugin name.
+ * @param[in] i    Network interface information.
+ * @param[in] sa   Network address information.
+ * @param[in] pm   Opaque pointer to mptcpd path manager object.
+ */
 MPTCPD_API void mptcpd_plugin_new_local_address_flow(
         char const *name,
         struct mptcpd_interface const *i,
         struct sockaddr const *sa,
         struct mptcpd_pm *pm);
 
+/**
+ * @brief Create a delete local address event flow
+ *
+ * Creates a new flow of delete local address events, starting from the
+ * plugin identified by @a name. 
+ *
+ * @param[in] name Plugin name.
+ * @param[in] i    Network interface information.
+ * @param[in] sa   Network address information.
+ * @param[in] pm   Opaque pointer to mptcpd path manager object.
+ */
 MPTCPD_API void mptcpd_plugin_delete_local_address_flow(
         char const *name,
         struct mptcpd_interface const *i,

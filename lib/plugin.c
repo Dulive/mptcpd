@@ -139,6 +139,17 @@ static bool check_directory_perms(char const *dir,
         return perms_ok;
 }
 
+/**
+ * @brief Compare plugin name.
+ *
+ * @param[in] a         Existing plugin information.
+ * @param[in] b         Name to compare.
+ *
+ * @return @c true if name in @a b matches plugin name 
+ *         in @a a, or @c false otherwise.
+ *
+ * @see @c l_queue_find()
+ */
 static bool compare_plugin_name(void const *a, void const *b)
 {
         struct plugin_info const *const info = a;
@@ -740,6 +751,18 @@ static bool delete_local_address(
                 true;
 }
 
+
+/**
+ * @brief Seeks through the plugin list.
+ *
+ * Seeks through the plugin list until a plugins matches
+ * the given @a name and starting at @a entry.
+ *
+ * @param[in] name      Plugin Name.
+ * @param[in] entry     Starting point.
+ *
+ * @return pointer to the queue entry that contains the matching plugin.
+ */
 static struct l_queue_entry const *plugins_seek(
         char const *name,
         struct l_queue_entry const *entry)
