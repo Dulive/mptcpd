@@ -1269,7 +1269,10 @@ static void handle_rtm_getlink(int error,
         struct mptcpd_nm *const nm        = user_data;
 
         if (is_interface_ready(ifi)) {
-                (void) insert_link(ifi, len, nm);
+                if (nm->notify_flags & MPTCPD_NOTIFY_FLAG_EXISTING_IFS)
+                        update_link(ifi, len, nm);
+                else
+                        (void) insert_link(ifi, len, nm);
         }
 }
 
@@ -1310,7 +1313,7 @@ static void handle_rtm_getaddr(int error,
                 return;
 
         handle_ifaddr_func_t handler = insert_addr;
-        if (nm->notify_flags & MPTCPD_NOTIFY_FLAG_EXISTING)
+        if (nm->notify_flags & MPTCPD_NOTIFY_FLAG_EXISTING_ADDRS)
                 handler = update_addr;
 
         foreach_ifaddr(ifa, len, nm, interface, handler);
@@ -1413,6 +1416,11 @@ struct mptcpd_nm *mptcpd_nm_create(uint32_t flags)
         nm->interfaces   = l_queue_new();
         nm->ops          = l_queue_new();
 
+        return nm;
+}
+
+bool mptcpd_nm_do_dumps(struct mptcpd_nm *nm)
+{
         /**
          * Get network interface information.
          *
@@ -1439,10 +1447,11 @@ struct mptcpd_nm *mptcpd_nm_create(uint32_t flags)
             == 0) {
                 l_error("Unable to obtain network devices.");
                 mptcpd_nm_destroy(nm);
-                return NULL;
+                return false;
         }
 
-        return nm;
+        return true;
+
 }
 
 void mptcpd_nm_destroy(struct mptcpd_nm *nm)

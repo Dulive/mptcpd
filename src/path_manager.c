@@ -833,6 +833,14 @@ static void complete_pm_init(void *data)
                 exit(EXIT_FAILURE);
         }
 
+        if (!mptcpd_nm_do_dumps(pm->nm)) {
+                l_error("Unable to dump interfaces and addresses.");
+
+                mptcpd_pm_destroy(pm);
+
+                exit(EXIT_FAILURE);
+        }
+
         /*
           Register callbacks for MPTCP generic netlink multicast
           notifications.

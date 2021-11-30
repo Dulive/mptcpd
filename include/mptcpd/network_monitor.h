@@ -145,9 +145,10 @@ struct mptcpd_nm_ops
  *
  * @param[in] flags            flags controlling address notification,
  *                             any of:
- *                             MPTCPD_NOTIFY_FLAG_EXISTING,,
+ *                             MPTCPD_NOTIFY_FLAG_EXISTING_ADDRS,
  *                             MPTCPD_NOTIFY_FLAG_SKIP_LL,
- *                             MPTCPD_NOTIFY_FLAG_SKIP_HOST
+ *                             MPTCPD_NOTIFY_FLAG_SKIP_HOST,
+ *                             MPTCPD_NOTIFY_FLAG_EXISTING_IFS
  *
  * @todo As currently implemented, one could create multiple network
  *       monitors.  Is that useful?
@@ -213,12 +214,25 @@ MPTCPD_API bool mptcpd_nm_register_ops(struct mptcpd_nm *nm,
                                        struct mptcpd_nm_ops const *ops,
                                        void *user_data);
 
+/**
+ * @brief Dump netowork intefaces and its adressess information.
+ *
+ * Dumps network interfaces and its adressess information retrieving
+ * all the necessary information.
+ *
+ * @param[in] nm        Pointer to the mptcpd network monitor
+ *                      object.
+ *
+ * @retval true  Dump succeeded.
+ * @retval false Dump failed.
+ */
+MPTCPD_API bool mptcpd_nm_do_dumps(struct mptcpd_nm *nm);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif  // MPTCPD_NETWORK_MONITOR_H
-
 
 /*
   Local Variables:

@@ -167,10 +167,11 @@ static char const *addr_flags_string(uint32_t flags,
 }
 
 struct tok_entry const notify_flags_toks[] = {
-        { MPTCPD_NOTIFY_FLAG_EXISTING, "existing" },
+        { MPTCPD_NOTIFY_FLAG_EXISTING_ADDRS, "existing_addrs" },
         { MPTCPD_NOTIFY_FLAG_SKIP_LL, "skip_link_local" },
         { MPTCPD_NOTIFY_FLAG_SKIP_HOST, "skip_loopback" },
         { MPTCPD_NOTIFY_FLAG_ROUTE_CHECK, "check_route" },
+        { MPTCPD_NOTIFY_FLAG_EXISTING_IFS, "existing_ifs" },
         { 0, NULL },
 };
 

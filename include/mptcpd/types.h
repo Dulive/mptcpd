@@ -61,7 +61,7 @@ typedef uint32_t mptcpd_flags_t;
 ///@}
 
 /// Notify even the addresses already existing at startup-time.
-#define MPTCPD_NOTIFY_FLAG_EXISTING  (1U << 0)
+#define MPTCPD_NOTIFY_FLAG_EXISTING_ADDRS  (1U << 0)
 
 /// Ignore link-local addresses.
 #define MPTCPD_NOTIFY_FLAG_SKIP_LL (1U << 1)
@@ -71,6 +71,9 @@ typedef uint32_t mptcpd_flags_t;
 
 /// Notify address only if a default route is available from the given interface
 #define MPTCPD_NOTIFY_FLAG_ROUTE_CHECK (1U << 3)
+
+/// Notify even the interfaces already existing at startup-time.
+#define MPTCPD_NOTIFY_FLAG_EXISTING_IFS (1U << 4)
 
 /**
  * @enum mptcpd_limit_types
