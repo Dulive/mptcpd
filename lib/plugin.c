@@ -240,14 +240,33 @@ static void report_error(int error, char const *msg)
         l_error("%s: %s", msg, r == 0 ? errmsg : "<unknown error>");
 }
 
-static void init_plugin(void *data, void *user_data)
+static bool unload_plugin(void *data, void *user_data)
+{
+        struct plugin_info *const p  = data;
+        struct mptcpd_pm   *const pm = user_data;
+
+        if (p->desc->exit)
+                p->desc->exit(pm);
+
+        dlclose(p->handle);
+        l_free(p);
+
+        return true;
+}
+
+static bool init_plugin(void *data, void *user_data)
 {
         struct plugin_info const *const p  = data;
         struct mptcpd_pm         *const pm = user_data;
 
-        if (p->desc->init && p->desc->init(pm) != 0)
+        if (p->desc->init && p->desc->init(pm) != 0) {
                 l_warn("Plugin \"%s\" failed to initialize",
                        p->desc->name);
+                (void) unload_plugin(data, user_data);
+                return true;
+        }
+
+        return false;
 }
 
 static void load_plugin(char const *filename)
@@ -401,23 +420,9 @@ static int load_plugins(char const *dir,
                 report_error(error, "Error during plugin directory read");
 
         // Initialize all loaded plugins.
-        l_queue_foreach(_plugin_infos, init_plugin, pm);
+        l_queue_foreach_remove(_plugin_infos, init_plugin, pm);
 
         return error;  // 0 on success
-}
-
-static bool unload_plugin(void *data, void *user_data)
-{
-        struct plugin_info *const p  = data;
-        struct mptcpd_pm   *const pm = user_data;
-
-        if (p->desc->exit)
-                p->desc->exit(pm);
-
-        dlclose(p->handle);
-        l_free(p);
-
-        return true;
 }
 
 static void unload_plugins(struct mptcpd_pm *pm)
