@@ -23,20 +23,32 @@
 #include <net/if.h>  // For standard network interface flags.
 #include <netinet/in.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <ell/netlink.h>
 #include <ell/log.h>
 #include <ell/util.h>
 #include <ell/queue.h>
 #include <ell/timeout.h>
 #include <ell/rtnl.h>
+#pragma GCC diagnostic pop
 
 #include <mptcpd/private/path_manager.h>
+#include <mptcpd/private/sockaddr.h>
+#include <mptcpd/private/network_monitor.h>
 #include <mptcpd/network_monitor.h>
+
+
 
 // See IETF RFC 3849: IPv6 Address Prefix Reserved for Documentation.
 // 2001:DB8::/32
-static struct in6_addr test_net_v6 = { .s6_addr = {0x20, 0x01, 0x0d, 0xb8, } };
-static struct in_addr test_net_v4;
+static struct in6_addr const test_net_v6 = {
+        .s6_addr = {0x20, 0x01, 0x0d, 0xb8, } };
+
+// See IETF RFC 5737: IPv4 Address Blocks Reserved for Documentation.
+static struct in_addr const test_net_v4 = {
+        .s_addr = MPTCPD_CONSTANT_HTONL(0xc0000201) };
+
 // -------------------------------------------------------------------
 
 /**
@@ -207,6 +219,9 @@ static void mptcpd_addr_cancel_timeout(struct nm_addr_info *ai)
  */
 static void mptcpd_addr_put(void *data)
 {
+        if (data == NULL)
+                return;
+
         struct nm_addr_info *const ai = data;
         if (--ai->count == 0) {
                 mptcpd_addr_cancel_timeout(ai);
@@ -786,6 +801,8 @@ insert_addr_return(struct mptcpd_interface *interface,
                 addr = NULL;
 
                 l_error("Unable to track internet address information.");
+
+                return addr;
         }
 
         addr->index = interface->index;
@@ -999,13 +1016,13 @@ static void check_default_route(struct nm_addr_info *ai)
         mptcpd_addr_get(ai);
 
         if (l_netlink_send(ai->nm->rtnl,
-            RTM_GETROUTE,
-            0,
-            &store,
-            buf - (char *)&store,
-            handle_rtm_getroute,
-            ai,
-            NULL) == 0) {
+                           RTM_GETROUTE,
+                           0,
+                           &store,
+                           buf - (char *) &store,
+                           handle_rtm_getroute,
+                           ai,
+                           NULL) == 0) {
                 l_debug("Route lookup failed");
                 mptcpd_addr_put(ai);
         }
@@ -1534,9 +1551,6 @@ bool mptcpd_nm_register_ops(struct mptcpd_nm *nm,
 {
         if (nm == NULL || ops == NULL)
                 return false;
-
-        // See IETF RFC 5737: IPv4 Address Blocks Reserved for Documentation.
-        test_net_v4.s_addr = htonl(0xc0000201);
 
         if (ops->new_interface       == NULL
             && ops->update_interface == NULL

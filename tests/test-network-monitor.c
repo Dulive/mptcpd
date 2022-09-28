@@ -15,12 +15,16 @@
 #include <netinet/in.h>  // For INET_ADDRSTRLEN and INET6_ADDRSTRLEN.
 #include <net/if.h>      // For standard network interface flags.
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <ell/main.h>
 #include <ell/idle.h>
 #include <ell/util.h>      // Needed by <ell/log.h>
 #include <ell/log.h>
 #include <ell/queue.h>
+#pragma GCC diagnostic pop
 
+#include <mptcpd/private/network_monitor.h>
 #include <mptcpd/network_monitor.h>
 
 #undef NDEBUG
@@ -109,10 +113,11 @@ static void check_interface(struct mptcpd_interface const *i, void *data)
                 i->flags,
                 i->name);
 
-        assert(l_queue_length(i->addrs) > 0);
-
-        l_debug("  addrs:");
-        l_queue_foreach(i->addrs, dump_addr, NULL);
+        /* Ifaces can have no addresses, e.g. if attached to a bridge. */
+        if (l_queue_length(i->addrs) > 0) {
+                l_debug("  addrs:");
+                l_queue_foreach(i->addrs, dump_addr, NULL);
+        }
 
         /*
           Only network interfaces that are up and running should be
@@ -256,7 +261,7 @@ int main(void)
         */
         assert(mptcpd_nm_monitor_loopback(nm, true));
 
-        struct mptcpd_nm_ops const nm_events[] = {
+        static struct mptcpd_nm_ops const nm_events[] = {
                 {
                         .new_interface    = handle_new_interface,
                         .update_interface = handle_update_interface,
@@ -272,14 +277,28 @@ int main(void)
                 {
                         .new_address      = handle_new_address,
                         .delete_address   = handle_delete_address
+                },
+                {
+                        .new_address      = NULL
                 }
         };
 
         // Subscribe to network monitoring related events.
-        for (size_t i = 0; i < L_ARRAY_SIZE(nm_events); ++i)
-                mptcpd_nm_register_ops(nm,
-                                       &nm_events[i],
-                                       (void *) &coffee);
+        for (struct mptcpd_nm_ops const *ops = nm_events;
+             ops != nm_events + L_ARRAY_SIZE(nm_events);
+             ++ops) {
+                bool const all_null_ops =
+                        (ops->new_interface       == NULL
+                         && ops->update_interface == NULL
+                         && ops->delete_interface == NULL
+                         && ops->new_address      == NULL
+                         && ops->delete_address   == NULL);
+
+                bool const registered =
+                        mptcpd_nm_register_ops(nm, ops, (void *) &coffee);
+
+                assert(registered || (all_null_ops && !registered));
+        }
 
         struct foreach_data data = { .nm = nm, .cup = coffee };
 
