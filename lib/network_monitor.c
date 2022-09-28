@@ -1469,6 +1469,11 @@ struct mptcpd_nm *mptcpd_nm_create(uint32_t flags)
         nm->ops              = l_queue_new();
         nm->monitor_loopback = false;
 
+        return nm;
+}
+
+bool mptcpd_nm_do_dumps(struct mptcpd_nm *nm)
+{
         /**
          * Get network interface information.
          *
@@ -1495,10 +1500,10 @@ struct mptcpd_nm *mptcpd_nm_create(uint32_t flags)
             == 0) {
                 l_error("Unable to obtain network devices.");
                 mptcpd_nm_destroy(nm);
-                return NULL;
+                return false;
         }
 
-        return nm;
+        return true;
 }
 
 void mptcpd_nm_destroy(struct mptcpd_nm *nm)
