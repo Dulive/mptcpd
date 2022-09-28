@@ -1304,7 +1304,10 @@ static void handle_rtm_getlink(int error,
         struct mptcpd_nm *const nm        = user_data;
 
         if (is_interface_ready(nm, ifi)) {
-                (void) insert_link(ifi, len, nm);
+                if (nm->notify_flags & MPTCPD_NOTIFY_FLAG_EXISTING)
+                        update_link(ifi, len, nm);
+                else
+                        (void) insert_link(ifi, len, nm);
         }
 }
 
