@@ -3,15 +3,82 @@
 
 # Minimal mptcpd start/stop test.
 #
-# Copyright (c) 2018, 2019, Intel Corporation
+# Copyright (c) 2018, 2019, 2021, 2022, Intel Corporation
 
+if [ -z "$TEST_PLUGIN_DIR" ]; then
+    echo TEST_PLUGIN_DIR environment variable is not set.
+    exit 1   # failure
+fi
 
-set -e
+# An exit status of 77 causes the Automake test driver to consider the
+# test as skipped.
+skip_exit_status=77
+
+# Skip the test if we're not using a kernel supporting MPTCP.
+if [ ! -d /proc/sys/net/mptcp ]; then
+    echo Not running a kernel supporting MPTCP, skipping the test
+    exit $skip_exit_status
+fi
+
+# Only run the individual enabled/disabled MPTCP test cases if the
+# "enabled" value can be set non-interactively, i.e. sudo can be
+# executed without a password.  This is mostly useful for automated
+# builds.
+echo Running non-interactive sudo check...
+if ! sudo -n echo "    succeeded"; then
+    echo "    fail, skipping the test"
+    exit $skip_exit_status
+fi
+
+# Detect MPTCP "enabled" sysctl variable name and value.
+#   upstream:          net.mptcp.enabled
+#   multipath-tcp.org: net.mptcp.mptcp_enabled
+variable=`sysctl --names --pattern 'mptcp.(|mptcp_)enabled' net.mptcp`
+old_value=`sysctl --values $variable`
+
+disable_value=0
+enable_value=1
+
+# "Disabled" value is always 0, but the "enabled" value could be 1 or
+# 2, depending on the kernel in use.  For example, the
+# multipath-tcp.org kernel "enabled" value could be 1 or 2.  Use the
+# old "enabled" value in case it is 2 instead of 1.
+if [ $old_value -ne 0 ]
+then
+    enable_value=$old_value
+fi
 
 # @todo It would be better to have some sort of indication that
 #       mptcpd is fully up and running rather than timeout after a
 #       fixed amount of time like this.
-timeout --preserve-status \
-	--signal=TERM     \
-	--kill-after=5s   \
-         1s ../src/mptcpd --plugin-dir=$TEST_PLUGIN_DIR
+command="timeout --preserve-status \
+                 --signal=TERM     \
+                 --kill-after=5s   \
+                 1s ../src/mptcpd --plugin-dir=$TEST_PLUGIN_DIR"
+
+# Exit status/code
+status=0
+
+for value in $disable_value $enable_value
+do
+    sudo -n sysctl -qw $variable=$value
+
+    $command
+    command_exit=$?
+
+    echo -n "TEST CASE: $variable = $value ..."
+
+    if ([ $value -eq $disable_value ] && [ $command_exit -eq 0 ]) \
+       || ([ $value -eq $enable_value ] && [ $command_exit -ne 0 ])
+    then
+	echo failed
+	status=1   # failure
+    else
+	echo passed
+    fi
+done
+
+# Reset the "enabled" value to its original value.
+sudo -n sysctl -qw $variable=$old_value
+
+exit $status

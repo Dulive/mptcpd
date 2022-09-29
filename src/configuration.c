@@ -4,7 +4,7 @@
  *
  * @brief Mptcpd configuration parser implementation.
  *
- * Copyright (c) 2017-2021, Intel Corporation
+ * Copyright (c) 2017-2022, Intel Corporation
  */
 
 #ifdef HAVE_CONFIG_H
@@ -21,15 +21,19 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <ell/log.h>
 #include <ell/util.h>
 #include <ell/settings.h>
 #include <ell/queue.h>
 #include <ell/string.h>
+#pragma GCC diagnostic pop
 
 #include <mptcpd/types.h>
 
 #include <mptcpd/private/configuration.h>
+#include <mptcpd/private/network_monitor.h>
 
 #ifdef HAVE_CONFIG_H
 # include <mptcpd/private/config.h>
@@ -116,12 +120,12 @@ struct tok_entry
 };
 
 static struct tok_entry const addr_flags_toks[] = {
-        { MPTCPD_ADDR_FLAG_SUBFLOW, "subflow" },
-        { MPTCPD_ADDR_FLAG_SIGNAL, "signal" },
-        { MPTCPD_ADDR_FLAG_BACKUP, "backup" },
+        { MPTCPD_ADDR_FLAG_SUBFLOW,  "subflow"  },
+        { MPTCPD_ADDR_FLAG_SIGNAL,   "signal"   },
+        { MPTCPD_ADDR_FLAG_BACKUP,   "backup"   },
+        { MPTCPD_ADDR_FLAG_FULLMESH, "fullmesh" },
         { 0, NULL },
 };
-
 
 /**
  * @brief Converts the flags into a string representation.
@@ -166,10 +170,11 @@ static char const *addr_flags_string(uint32_t flags,
         return flags_string(addr_flags_toks, flags, str, len);
 }
 
-struct tok_entry const notify_flags_toks[] = {
-        { MPTCPD_NOTIFY_FLAG_EXISTING, "existing" },
-        { MPTCPD_NOTIFY_FLAG_SKIP_LL, "skip_link_local" },
-        { MPTCPD_NOTIFY_FLAG_SKIP_HOST, "skip_loopback" },
+static struct tok_entry const notify_flags_toks[] = {
+        { MPTCPD_NOTIFY_FLAG_EXISTING,    "existing" },
+        { MPTCPD_NOTIFY_FLAG_SKIP_LL,     "skip_link_local" },
+        { MPTCPD_NOTIFY_FLAG_SKIP_HOST,   "skip_loopback" },
+        { MPTCPD_NOTIFY_FLAG_ROUTE_CHECK, "check_route" },
         { 0, NULL },
 };
 
@@ -180,11 +185,12 @@ static char const *notify_flags_string(uint32_t flags,
         return flags_string(notify_flags_toks, flags, str, len);
 }
 
-static char const *plugins_to_load_string(struct l_queue const *queue)
+static char *plugins_to_load_string(struct l_queue const *queue)
 {
-        struct l_string *string = l_string_new(128);
+        struct l_string *const string = l_string_new(128);
 
-        struct l_queue_entry const *entry = 
+        // Cast is needed for ELL < 0.41.
+        struct l_queue_entry const *entry =
                 l_queue_get_entries((struct l_queue *) queue);
 
         while (entry->next) {
@@ -268,7 +274,7 @@ static uint32_t notify_flags_from_string(char const *str)
  * @param[in]     src  Dynamically allocated string to assigned
  *                     @c *dest.
  */
-static void reset_string(char const **dest, char const *src)
+static void reset_string(char **dest, char *src)
 {
         assert(dest != NULL);  // *dest may be NULL.
 
@@ -286,7 +292,7 @@ static void reset_string(char const **dest, char const *src)
  * @param[in]     dir    Mptcpd plugin directory.  Ownership of memory
  *                       is transferred to @a config.
  */
-static void set_plugin_dir(struct mptcpd_config *config, char const *dir)
+static void set_plugin_dir(struct mptcpd_config *config, char *dir)
 {
         reset_string(&config->plugin_dir, dir);
 }
@@ -303,7 +309,7 @@ static void set_plugin_dir(struct mptcpd_config *config, char const *dir)
  *                       memory is transferred to @a config.
  */
 static void set_default_plugin(struct mptcpd_config *config,
-                               char const *plugin)
+                               char *plugin)
 {
         reset_string(&config->default_plugin, plugin);
 }
@@ -323,18 +329,27 @@ static void set_plugins_to_load(struct mptcpd_config *config,
 
         char *token = strtok(plugins, ",");
         while (token) {
-                l_queue_push_tail(
-                        (struct l_queue *) config->plugins_to_load,
-                        token);
+                l_queue_push_tail(config->plugins_to_load,
+                                  l_strdup(token));
 
                 token = strtok(NULL, ",");
         }
+
+        l_free((char *) plugins);
 }
 
 // ---------------------------------------------------------------
 // Command line options
 // ---------------------------------------------------------------
-static char const doc[] = "Start the Multipath TCP daemon.";
+#ifdef HAVE_UPSTREAM_KERNEL
+#  define MPTCPD_KERNEL "upstream"
+#else
+#  define MPTCPD_KERNEL "multipath-tcp.org"
+#endif
+static char const doc[] =
+        "Start the Multipath TCP daemon."
+        "\v"
+        "Supported Linux kernel: " MPTCPD_KERNEL;
 
 /**
  * @name Command Line Option Key Values
@@ -348,7 +363,7 @@ static char const doc[] = "Start the Multipath TCP daemon.";
 /// Command line option key for "--path-manager".
 #define MPTCPD_PATH_MANAGER_KEY 0x101
 
-/// Command line option key for "--addr-flags" 
+/// Command line option key for "--addr-flags"
 #define MPTCPD_ADDR_FLAGS_KEY 0x102
 
 /// Command line option key for "--notify-flags"
@@ -568,8 +583,11 @@ static void parse_config_addr_flags(struct mptcpd_config *config,
                                       group,
                                       "addr-flags");
 
-        if (addr_flags != NULL)
+        if (addr_flags != NULL) {
                 config->addr_flags = addr_flags_from_string(addr_flags);
+
+                l_free(addr_flags);
+        }
 }
 
 static void parse_config_notify_flags(struct mptcpd_config *config,
@@ -584,8 +602,11 @@ static void parse_config_notify_flags(struct mptcpd_config *config,
                                       group,
                                       "notify-flags");
 
-        if (notify_flags != NULL)
+        if (notify_flags != NULL) {
                 config->notify_flags = notify_flags_from_string(notify_flags);
+
+                l_free(notify_flags);
+        }
 }
 
 static void parse_config_default_plugin(struct mptcpd_config *config,
@@ -752,7 +773,7 @@ static bool merge_config(struct mptcpd_config       *dst,
                 while (entry) {
                         l_queue_push_tail(
                                 (struct l_queue *) dst->plugins_to_load,
-                                entry->data);
+                                l_strdup(entry->data));
 
                         entry = entry->next;
                 }
@@ -812,8 +833,9 @@ struct mptcpd_config *mptcpd_config_create(int argc, char *argv[])
                 && merge_config(config, &def_config)
                 && check_config(config);
 
-        l_free((char *) sys_config.default_plugin);
-        l_free((char *) sys_config.plugin_dir);
+        l_queue_destroy(sys_config.plugins_to_load, l_free);
+        l_free(sys_config.default_plugin);
+        l_free(sys_config.plugin_dir);
 
         if (!parsed) {
                 // Failed to parse configuration.
@@ -842,11 +864,11 @@ struct mptcpd_config *mptcpd_config_create(int argc, char *argv[])
                         notify_flags_string(config->notify_flags, flags, sizeof(flags)));
 
         if (config->plugins_to_load){
-                char const *str = 
+                char *const str =
                         plugins_to_load_string(config->plugins_to_load);
 
                 l_debug("plugins to load: %s", str);
-                l_free((char *) str);
+                l_free(str);
         }
 
         return config;
@@ -857,10 +879,9 @@ void mptcpd_config_destroy(struct mptcpd_config *config)
         if (config == NULL)
                 return;
 
-        l_queue_destroy((struct l_queue *) config->plugins_to_load,
-                        NULL);
-        l_free((char *) config->default_plugin);
-        l_free((char *) config->plugin_dir);
+        l_queue_destroy(config->plugins_to_load, l_free);
+        l_free(config->default_plugin);
+        l_free(config->plugin_dir);
         l_free(config);
 }
 

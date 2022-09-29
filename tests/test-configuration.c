@@ -7,16 +7,18 @@
  * Copyright (c) 2019, 2021, Intel Corporation
  */
 
-#undef NDEBUG
-#include <assert.h>
-
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <ell/main.h>
 #include <ell/util.h>      // Needed by <ell/log.h>
 #include <ell/log.h>
 #include <ell/test.h>
+#pragma GCC diagnostic pop
 
 #include <mptcpd/private/configuration.h>  // INTERNAL!
 
+#undef NDEBUG
+#include <assert.h>
 
 #define TEST_PROGRAM_NAME "test-configuration"
 

@@ -4,10 +4,8 @@
  *
  * @brief mptcpd plugin test.
  *
- * Copyright (c) 2018-2021, Intel Corporation
+ * Copyright (c) 2018-2022, Intel Corporation
  */
-
-#undef NDEBUG
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -15,7 +13,6 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include <assert.h>
 
 #include <ell/test.h>
 #include <ell/queue.h>
@@ -25,8 +22,11 @@
 
 #include "test-plugin.h"
 
+#undef NDEBUG
+#include <assert.h>
 
-static bool run_plugin_load(mode_t mode, struct l_queue *queue)
+
+static bool run_plugin_load(mode_t mode, struct l_queue const *queue)
 {
         static char const dir[]            = TEST_PLUGIN_DIR_SECURITY;
         static char const default_plugin[] = TEST_PLUGIN_FOUR;
@@ -42,16 +42,20 @@ static bool run_plugin_load(mode_t mode, struct l_queue *queue)
         int const mode_ok = fchmod(fd, mode);
         assert(mode_ok == 0);
 
-        bool const loaded = mptcpd_plugin_load(dir, default_plugin, queue, pm);
+        bool const loaded =
+                mptcpd_plugin_load(dir, default_plugin, queue, pm);
 
         if (loaded) {
-                call_plugin_ops(&test_count_4,
-                                NULL,
-                                test_token_4,
-                                test_raddr_id_4,
-                                (struct sockaddr const *) &test_laddr_4,
-                                (struct sockaddr const *) &test_raddr_4,
-                                test_backup_4);
+                static struct plugin_call_args const args = {
+                        .token       = test_token_4,
+                        .raddr_id    = test_raddr_id_4,
+                        .laddr       = (struct sockaddr const *) &test_laddr_4,
+                        .raddr       = (struct sockaddr const *) &test_raddr_4,
+                        .backup      = test_backup_4,
+                        .server_side = test_server_side_4
+                };
+
+                call_plugin_ops(&test_count_4, &args);
 
                 mptcpd_plugin_unload(pm);
         }
@@ -136,12 +140,13 @@ static void test_existing_plugins(void const *test_data)
         // Owner and group read/write/execute permissions.
         mode_t const mode = S_IRWXU | S_IRWXG;
 
-        struct l_queue *plugins_list=
-                l_queue_new();
+        struct l_queue *const plugins_list = l_queue_new();
 
         l_queue_push_tail(plugins_list, "four");
 
         bool const loaded = run_plugin_load(mode, plugins_list);
+
+        l_queue_destroy(plugins_list, NULL);
 
         assert(loaded);
 }
@@ -152,19 +157,32 @@ static void test_existing_plugins(void const *test_data)
  * The @c mptcpd_plugin_load() function should return with a failure
  * if the specified plugins do not exist in the provided plugin directory.
  */
-static void test_nonexisting_plugins(void const *test_data)
+static void test_nonexistent_plugins(void const *test_data)
 {
         (void) test_data;
 
         // Owner and group read/write/execute permissions.
         mode_t const mode = S_IRWXU | S_IRWXG;
 
-        struct l_queue *plugins_list=
-                l_queue_new();
+        struct l_queue *const plugins_list = l_queue_new();
 
-        l_queue_push_tail(plugins_list, "nonexisting_plugin");
+        static char nonexistent_plugin[] = "nonexistent_plugin";
+        l_queue_push_tail(plugins_list, nonexistent_plugin);
 
         bool const loaded = run_plugin_load(mode, plugins_list);
+
+        l_queue_destroy(plugins_list, NULL);
+
+        /*
+          Force plugin name-to-ops lookup to fail excercise additional
+          error paths.
+        */
+        mptcpd_plugin_new_connection(nonexistent_plugin,
+                                     0,     // token
+                                     NULL,  // laddr
+                                     NULL,  // raddr
+                                     false, // server_side
+                                     NULL); // pm
 
         assert(!loaded);
 }
@@ -183,36 +201,48 @@ static void test_plugin_dispatch(void const *test_data)
         static char const *const default_plugin = NULL;
         struct mptcpd_pm *const pm = NULL;
 
-        bool const loaded = mptcpd_plugin_load(dir, default_plugin, NULL, pm);
+        bool const loaded =
+                mptcpd_plugin_load(dir, default_plugin, NULL, pm);
         assert(loaded);
 
         // Notice that we call plugin 1 twice.
         // Plugin 1
-        call_plugin_ops(&test_count_1,
-                        TEST_PLUGIN_ONE,
-                        test_token_1,
-                        test_raddr_id_1,
-                        (struct sockaddr const *) &test_laddr_1,
-                        (struct sockaddr const *) &test_raddr_1,
-                        test_backup_1);
+        struct plugin_call_args const args1 = {
+                .name        = TEST_PLUGIN_ONE,
+                .token       = test_token_1,
+                .raddr_id    = test_raddr_id_1,
+                .laddr       = (struct sockaddr const *) &test_laddr_1,
+                .raddr       = (struct sockaddr const *) &test_raddr_1,
+                .backup      = test_backup_1,
+                .server_side = test_server_side_1
+        };
 
-        // Plugin 1 as default
-        call_plugin_ops(&test_count_1,
-                        NULL,
-                        test_token_1,
-                        test_raddr_id_1,
-                        (struct sockaddr const *) &test_laddr_1,
-                        (struct sockaddr const *) &test_raddr_1,
-                        test_backup_1);
+        call_plugin_ops(&test_count_1, &args1);
+
+        // Plugin 1 as default (no plugin name specified)
+        struct plugin_call_args const args1_default = {
+                .token       = args1.token,
+                .raddr_id    = args1.raddr_id,
+                .laddr       = args1.laddr,
+                .raddr       = args1.raddr,
+                .backup      = args1.backup,
+                .server_side = args1.server_side
+        };
+
+        call_plugin_ops(&test_count_1, &args1_default);
 
         // Plugin 2
-        call_plugin_ops(&test_count_2,
-                        TEST_PLUGIN_TWO,
-                        test_token_2,
-                        test_raddr_id_2,
-                        (struct sockaddr const *) &test_laddr_2,
-                        (struct sockaddr const *) &test_raddr_2,
-                        test_backup_2);
+        struct plugin_call_args const args2 = {
+                .name        = TEST_PLUGIN_TWO,
+                .token       = test_token_2,
+                .raddr_id    = test_raddr_id_2,
+                .laddr       = (struct sockaddr const *) &test_laddr_2,
+                .raddr       = (struct sockaddr const *) &test_raddr_2,
+                .backup      = test_backup_2,
+                .server_side = test_server_side_2
+        };
+
+        call_plugin_ops(&test_count_2, &args2);
 
         /*
           Invalid MPTCP token - no plugin dispatch should occur.
@@ -232,6 +262,7 @@ static void test_plugin_dispatch(void const *test_data)
                 test_bad_token,
                 (struct sockaddr const *) &test_laddr_2,
                 (struct sockaddr const *) &test_raddr_2,
+                test_server_side_2,
                 NULL);
 
         // Test assertions will be triggered during plugin unload.
@@ -268,18 +299,65 @@ static void test_null_plugin_ops(void const *test_data)
         static struct sockaddr const *const laddr = NULL;
         static struct sockaddr const *const raddr = NULL;
         static bool backup = false;
+        static bool server_side = false;
+        static struct mptcpd_interface const *const interface = NULL;
 
         // No dispatch should occur in the following calls.
-        mptcpd_plugin_new_connection(name, token, laddr, raddr, pm);
-        mptcpd_plugin_connection_established(token, laddr, raddr, pm);
+        mptcpd_plugin_new_connection(name, token, laddr, raddr, server_side, pm);
+        mptcpd_plugin_connection_established(token, laddr, raddr, server_side, pm);
         mptcpd_plugin_connection_closed(token, pm);
         mptcpd_plugin_new_address(token, id, raddr, pm);
         mptcpd_plugin_address_removed(token, id, pm);
         mptcpd_plugin_new_subflow(token, laddr, raddr, backup, pm);
         mptcpd_plugin_subflow_closed(token, laddr, raddr, backup, pm);
         mptcpd_plugin_subflow_priority(token, laddr, raddr, backup, pm);
+        mptcpd_plugin_new_interface(interface, pm);
+        mptcpd_plugin_update_interface(interface, pm);
+        mptcpd_plugin_delete_interface(interface, pm);
+        mptcpd_plugin_new_local_address(interface, laddr, pm);
+        mptcpd_plugin_delete_local_address(interface, laddr, pm);
 
         mptcpd_plugin_unload(pm);
+}
+
+/**
+ * @brief Verify graceful handling of @c NULL plugin directory.
+ */
+static void test_null_plugin_dir(void const *test_data)
+{
+        (void) test_data;
+
+        char const *const dir                       = NULL;
+        char const *const default_plugin            = NULL;
+        struct l_queue const *const plugins_to_load = NULL;
+        struct mptcpd_pm *const pm                  = NULL;
+
+        bool const loaded =
+                mptcpd_plugin_load(dir,
+                                   default_plugin,
+                                   plugins_to_load,
+                                   pm);
+        assert(!loaded);
+}
+
+/**
+ * @brief Verify graceful handling of bad/malformed plugins.
+ */
+static void test_bad_plugins(void const *test_data)
+{
+        (void) test_data;
+
+        char const *const dir                       = TEST_PLUGIN_DIR_BAD;
+        char const *const default_plugin            = NULL;
+        struct l_queue const *const plugins_to_load = NULL;
+        struct mptcpd_pm *const pm                  = NULL;
+
+        bool const loaded =
+                mptcpd_plugin_load(dir,
+                                   default_plugin,
+                                   plugins_to_load,
+                                   pm);
+        assert(!loaded);
 }
 
 int main(int argc, char *argv[])
@@ -290,9 +368,11 @@ int main(int argc, char *argv[])
         l_test_add("bad  permissions",   test_bad_perms,           NULL);
         l_test_add("no plugins",         test_no_plugins,          NULL);
         l_test_add("existing plugin",    test_existing_plugins,    NULL);
-        l_test_add("nonexisting plugin", test_nonexisting_plugins, NULL);
+        l_test_add("nonexistent plugin", test_nonexistent_plugins, NULL);
         l_test_add("plugin dispatch",    test_plugin_dispatch,     NULL);
         l_test_add("null plugin ops",    test_null_plugin_ops,     NULL);
+        l_test_add("null plugin dir",    test_null_plugin_dir,     NULL);
+        l_test_add("bad plugins",        test_bad_plugins,         NULL);
 
         return l_test_run();
 }

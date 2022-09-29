@@ -20,6 +20,7 @@
 #include <ell/log.h>
 
 #include "commands.h"
+#include "netlink_pm.h"
 
 #include <mptcpd/private/mptcp_org.h>
 #include <mptcpd/private/netlink_pm.h>
@@ -114,8 +115,9 @@ static bool append_addr_attr(struct l_genl_msg *msg,
                 struct sockaddr_in const *const addr4 =
                         (struct sockaddr_in *) addr;
 
-                data = &addr4->sin_addr;
-                len  = sizeof(addr4->sin_addr);
+                // IPv4 address in network byte order.
+                data = &addr4->sin_addr.s_addr;
+                len  = sizeof(addr4->sin_addr.s_addr);
         } else {
                 if (local)
                         type = MPTCP_ATTR_SADDR6;
@@ -151,7 +153,7 @@ static bool append_remote_addr_attr(struct l_genl_msg *msg,
 // ---------------------------------------------------------------------
 
 static int mptcp_org_add_addr(struct mptcpd_pm *pm,
-                              struct sockaddr const *addr,
+                              struct sockaddr *addr,
                               mptcpd_aid_t id,
                               mptcpd_token_t token)
 {
@@ -161,7 +163,7 @@ static int mptcp_org_add_addr(struct mptcpd_pm *pm,
               Local address ID
               Local address family
               Local address
-              Local port (optional)
+              Local port (host byte order) (optional)
          */
 
         // Types chosen to match MPTCP genl API.
@@ -220,9 +222,12 @@ static int mptcp_org_add_addr(struct mptcpd_pm *pm,
 }
 
 static int mptcp_org_remove_addr(struct mptcpd_pm *pm,
+                                 struct sockaddr const *addr,
                                  mptcpd_aid_t address_id,
                                  mptcpd_token_t token)
 {
+        (void) addr;
+
         /*
           Payload:
               Token
@@ -281,11 +286,11 @@ static int mptcp_org_add_subflow(struct mptcpd_pm *pm,
               Local address ID
               Remote address ID
               Remote address
-              Remote port
+              Remote port (host byte order)
 
               Optional attributes:
                   Local address
-                  Local port
+                  Local port (host byte order)
                   Backup priority flag
                   Network interface index
          */
@@ -380,9 +385,9 @@ static int mptcp_org_set_backup(struct mptcpd_pm *pm,
               Token
               Address family
               Local address
-              Local port
+              Local port (host byte order)
               Remote address
-              Remote port
+              Remote port (host byte order)
               Backup priority flag
          */
 
@@ -464,9 +469,9 @@ static int mptcp_org_remove_subflow(struct mptcpd_pm *pm,
               Token
               Address family
               Local address
-              Local port
+              Local port (host byte order)
               Remote address
-              Remote port
+              Remote port (host byte order)
          */
 
         uint16_t const family      = mptcpd_get_addr_family(local_addr);
@@ -546,8 +551,18 @@ static struct mptcpd_netlink_pm const npm = {
         .cmd_ops = &cmd_ops
 };
 
-struct mptcpd_netlink_pm const *mptcpd_get_netlink_pm_mptcp_org(void)
+struct mptcpd_netlink_pm const *mptcpd_get_netlink_pm(void)
 {
+        l_debug(PACKAGE " was built with support for the "
+                "multipath-tcp.org kernel.");
+
+        static char const path[] = MPTCP_SYSCTL_VARIABLE(mptcp_enabled);
+        static char const name[] = "mptcp_enabled";
+        static int  const enable_val = 2;  // or 1
+
+        if (!mptcpd_is_kernel_mptcp_enabled(path, name, enable_val))
+                return NULL;
+
         check_kernel_mptcp_path_manager();
 
         return &npm;

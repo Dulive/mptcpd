@@ -1,11 +1,11 @@
 .\" SPDX-License-Identifier: BSD-3-Clause
 .\"
-.\" Copyright (c) 2017-2021, Intel Corporation
+.\" Copyright (c) 2017-2022, Intel Corporation
 
 .\" Process this file with
 .\" groff -man -Tascii mptcpd.8
 .\"
-.TH MPTCPD 8 "2021-09-17" "Multipath TCP Daemon" "System Management Commands"
+.TH MPTCPD 8 "2022-08-19" "Multipath TCP Daemon" "System Management Commands"
 .SH NAME
 mptcpd \- multipath TCP daemon
 .SH SYNOPSIS
@@ -71,8 +71,9 @@ set flags for announced address, where
 is a comma separated list containing one or more of the flags
 .IR subflow ,
 .IR signal ,
+.IR backup ,
 and
-.I backup
+.I fullmesh
 that plugins that deal with the in-kernel path manager may use when
 advertising addresses, e.g.
 .B --addr-flags=subflow
@@ -98,11 +99,20 @@ ignore (do not notify) [ipv6] link local address updates
 .I skip_loopback
 ignore (do not notify) host (loopback) address updates
 .RE
+.RS
+.TP
+.I check_route
+notify address only if a default route is available from such
+address and the related device. If the route check fails, it will
+re-done after a little timeout, to allow .e.g. DHCP to configure the
+host properly. Complex Policy routing configuration may confuse or
+circumvent this check.
+.RE
 .P
 .RS
 These flags determine whether mptpcd plugins will be notified when
 related addresses are updated, e.g.
-.B --notify-flags=existing,skip_link_local
+.B --notify-flags=existing,skip_link_local,check_route
 .RE
 
 .TP
@@ -119,8 +129,8 @@ overriding plugin priorities
 .TP
 .BI \-\-load\-plugins= PLUGINS
 set plugins to load on startup, where
-.I PLUGINS ,
-is a comma separated list containing one or more plugin names.
+.I PLUGINS 
+is a comma separated list containing one or more plugin names
 
 .TP
 .BR \-V , \-\-version

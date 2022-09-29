@@ -4,7 +4,7 @@
  *
  * @brief mptcpd network device monitoring.
  *
- * Copyright (c) 2017-2021, Intel Corporation
+ * Copyright (c) 2017-2022, Intel Corporation
  */
 
 #ifdef HAVE_CONFIG_H
@@ -19,17 +19,35 @@
 #include <assert.h>
 
 #include <linux/rtnetlink.h>
+#include <arpa/inet.h>
 #include <net/if.h>  // For standard network interface flags.
 #include <netinet/in.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <ell/netlink.h>
 #include <ell/log.h>
 #include <ell/util.h>
 #include <ell/queue.h>
+#include <ell/timeout.h>
+#include <ell/rtnl.h>
+#pragma GCC diagnostic pop
 
 #include <mptcpd/private/path_manager.h>
+#include <mptcpd/private/sockaddr.h>
+#include <mptcpd/private/network_monitor.h>
 #include <mptcpd/network_monitor.h>
 
+
+
+// See IETF RFC 3849: IPv6 Address Prefix Reserved for Documentation.
+// 2001:DB8::/32
+static struct in6_addr const test_net_v6 = {
+        .s6_addr = {0x20, 0x01, 0x0d, 0xb8, } };
+
+// See IETF RFC 5737: IPv4 Address Blocks Reserved for Documentation.
+static struct in_addr const test_net_v4 = {
+        .s_addr = MPTCPD_CONSTANT_HTONL(0xc0000201) };
 
 // -------------------------------------------------------------------
 
@@ -72,6 +90,9 @@ struct mptcpd_nm
 
         /// Flags controlling address notification.
         uint32_t notify_flags;
+
+        /// Enable/disable loopback network interface monitoring.
+        bool monitor_loopback;
 };
 
 // -------------------------------------------------------------------
@@ -103,14 +124,48 @@ struct mptcpd_rtm_addr
 };
 
 /**
+ * @struct nm_addr_info
+ *
+ * @brief Convenience structure to bundle address information.
+ *
+ * Note that Network monitor users (tests and sspi plugin) assume
+ * that interface->addr is a list of sockaddr. Placing the
+ * sockaddr_storage as the first field allow expanding the address
+ * metadata without breaking that assumption
+ */
+struct nm_addr_info
+{
+        /// Network address information.
+        struct sockaddr_storage address;
+
+        /// Weak reference to network interface.
+        struct mptcpd_interface const *interface;
+
+        /// Network interface index
+        int index;
+
+        /// Usage counter, free this when reaches 0
+        int count;
+
+        /// Route check timeout
+        struct l_timeout *timeout;
+
+        /// Route check attemps
+        int attempts;
+
+        // Network monitor reference
+        struct mptcpd_nm *nm;
+};
+
+/**
  * @brief Create an object that contains internet network
  *        address-specific information.
  *
  * @param[in] info Network address-specific information retrieved from
  *                 the @c RTM_NEWADDR message.
  */
-static struct sockaddr *
-mptcpd_sockaddr_create(struct mptcpd_rtm_addr const *info)
+static struct nm_addr_info *
+mptcpd_addr_create(struct mptcpd_rtm_addr const *info)
 {
         assert(info != NULL);
 
@@ -119,52 +174,90 @@ mptcpd_sockaddr_create(struct mptcpd_rtm_addr const *info)
         if (family != AF_INET && family != AF_INET6)
                 return NULL;
 
-        struct sockaddr *addr = NULL;
+        struct nm_addr_info *const ai = l_new(struct nm_addr_info, 1);
+        ai->address.ss_family = family;
+        ai->count = 1;
 
         if (family == AF_INET) {
                 struct sockaddr_in *const a =
-                        l_new(struct sockaddr_in, 1);
-
-                a->sin_family = family;
+                        (struct sockaddr_in *) &ai->address;
 
                 /*
                   Kernel nla_put_in_addr() inserts a big endian 32
                   bit unsigned integer, not struct in_addr.
                 */
                 a->sin_addr.s_addr = *(uint32_t const*) info->addr;
-
-                addr = (struct sockaddr *) a;
         } else {
                 struct sockaddr_in6 *const a =
-                        l_new(struct sockaddr_in6, 1);
-
-                a->sin6_family = family;
+                        (struct sockaddr_in6 *) &ai->address;
 
                 struct in6_addr const *const sa =
                         (struct in6_addr const*) info->addr;
 
                 memcpy(&a->sin6_addr, sa, sizeof(*sa));
-
-                addr = (struct sockaddr *) a;
         }
 
-        return addr;
+        return ai;
 }
 
-/**
- * @brief Destroy a @c sockaddr object.
- *
- * @param[in,out] Pointer to the @c sockaddr object to be destroyed.
- */
-static void mptcpd_sockaddr_destroy(void *data)
+static void mptcpd_addr_cancel_timeout(struct nm_addr_info *ai)
 {
-        l_free(data);
+        if (!ai->timeout)
+                return;
+
+        l_timeout_remove(ai->timeout);
+        ai->timeout = NULL;
 }
 
 /**
- * @brief Compare two @c sockaddr objects.
+ * @brief Drop a reference count to a @c nm_addr_info object.
  *
- * Compare @c sockaddr objects to determine where in the network
+ * Drop reference count to a @c nm_addr_info object, eventually destroying
+ * it when the reference count drops to zero.
+ *
+ * @param[in,out] Pointer to the @c nm_addr_info object to be released.
+ */
+static void mptcpd_addr_put(void *data)
+{
+        if (data == NULL)
+                return;
+
+        struct nm_addr_info *const ai = data;
+        if (--ai->count == 0) {
+                mptcpd_addr_cancel_timeout(ai);
+                l_free(data);
+        }
+}
+
+/**
+ * @brief Acquire a reference to a @c nm_addr_info object
+ *
+ * @param[in,out] Pointer to the @c nm_addr_info object to be destroyed.
+ */
+static void mptcpd_addr_get(struct nm_addr_info *ai)
+{
+        ai->count++;
+}
+
+static const char *mptcpd_addr_to_string(struct nm_addr_info const *ai,
+                                         char *out,
+                                         int size)
+{
+        void const *src;
+
+        if (ai->address.ss_family == AF_INET) {
+                src = &((struct sockaddr_in const *)&ai->address)->sin_addr;
+        } else {
+                src = &((struct sockaddr_in6 const *)&ai->address)->sin6_addr;
+        }
+
+        return inet_ntop(ai->address.ss_family, src, out, size);
+}
+
+/**
+ * @brief Compare two @c nm_addr_info objects.
+ *
+ * Compare @c nm_addr_info objects to determine where in the network
  * address list the first object, @a a, will be inserted relative to
  * the second object, @a b.
  *
@@ -174,7 +267,7 @@ static void mptcpd_sockaddr_destroy(void *data)
  * @see l_queue_insert()
  */
 static int
-mptcpd_sockaddr_compare(void const *a, void const *b, void *user_data)
+mptcpd_addr_compare(void const *a, void const *b, void *user_data)
 {
         (void) a;
         (void) b;
@@ -185,14 +278,14 @@ mptcpd_sockaddr_compare(void const *a, void const *b, void *user_data)
 }
 
 /**
- * @brief Match a @c sockaddr object.
+ * @brief Match a @c nm_addr_info object.
  *
- * A network address represented by @a a (@c struct @c sockaddr)
+ * A network address represented by @a a (@c struct @c nm_addr_info)
  * matches if its @c family and IPv4/IPv6 address members match those
  * in @a b.
  *
  * @param[in] a Currently monitored network address of type @c struct
- *              @c sockaddr*.
+ *              @c nm_addr_info*.
  * @param[in] b Network address information of type @c struct
  *              @c mptcpd_rtm_addr* to be compared against network
  *              address @a a.
@@ -203,23 +296,24 @@ mptcpd_sockaddr_compare(void const *a, void const *b, void *user_data)
  * @see l_queue_find()
  * @see l_queue_remove_if()
  */
-static bool mptcpd_sockaddr_match(void const *a, void const *b)
+static bool mptcpd_addr_match(void const *a, void const *b)
 {
-        struct sockaddr        const *const lhs = a;
+        struct nm_addr_info const *const lhs = a;
         struct mptcpd_rtm_addr const *const rhs = b;
 
         assert(lhs);
         assert(rhs);
-        assert(lhs->sa_family == AF_INET || lhs->sa_family == AF_INET6);
+        assert(lhs->address.ss_family == AF_INET
+               || lhs->address.ss_family == AF_INET6);
 
-        bool matched = (lhs->sa_family == rhs->ifa->ifa_family);
+        bool matched = (lhs->address.ss_family == rhs->ifa->ifa_family);
 
         if (!matched)
                 return matched;
 
-        if (lhs->sa_family == AF_INET) {
+        if (lhs->address.ss_family == AF_INET) {
                 struct sockaddr_in const *const addr =
-                        (struct sockaddr_in const *) lhs;
+                        (struct sockaddr_in const *) &lhs->address;
 
                 /*
                   Kernel nla_put_in_addr() inserts a big endian 32 bit
@@ -230,17 +324,11 @@ static bool mptcpd_sockaddr_match(void const *a, void const *b)
                 matched = (addr->sin_addr.s_addr == sa);
         } else {
                 struct sockaddr_in6 const *const addr =
-                        (struct sockaddr_in6 const *) lhs;
+                        (struct sockaddr_in6 const *) &lhs->address;
 
                 struct in6_addr const *const sa =
                         (struct in6_addr const*) rhs->addr;
 
-                /**
-                 * @todo Is memcmp() suitable in this case?  Do we
-                 *       need to worry about the existence of
-                 *       uninitialized bytes in the IPv6 address byte
-                 *       array.
-                 */
                 matched = (memcmp(&addr->sin6_addr,
                                   sa,
                                   sizeof(addr->sin6_addr))
@@ -371,7 +459,7 @@ static void mptcpd_interface_destroy(void *data)
 {
         struct mptcpd_interface *const i = data;
 
-        l_queue_destroy(i->addrs, mptcpd_sockaddr_destroy);
+        l_queue_destroy(i->addrs, mptcpd_addr_put);
         l_free(i);
 }
 
@@ -448,20 +536,6 @@ static void mptcpd_interface_callback(void *data, void *user_data)
 // -------------------------------------------------------------------
 
 /**
- * @struct mptcpd_addr_info
- *
- * @brief Convenience structure to bundle address information.
- */
-struct mptcpd_addr_info
-{
-        /// Network interface information.
-        struct mptcpd_interface const *const interface;
-
-        /// Network address information.
-        struct sockaddr const *const address;
-};
-
-/**
  * @brief Check if network interface is ready for use.
  *
  * @param[in] ifi Network interface-specific information retrieved
@@ -469,16 +543,15 @@ struct mptcpd_addr_info
  *
  * @return @c true if network interface is ready, and @c false other.
  */
-static bool is_interface_ready(struct ifinfomsg const *ifi)
+static bool is_interface_ready(struct mptcpd_nm const *nm,
+                               struct ifinfomsg const *ifi)
 {
-        /*
-          Only accept non-loopback network interfaces that are
-          up and running.
-        */
-        static unsigned int const iff_ready = IFF_UP | IFF_RUNNING;
+        // Only accept network interfaces that are up and running.
+        static unsigned int iff_ready = IFF_UP | IFF_RUNNING;
 
         return (ifi->ifi_flags & iff_ready) == iff_ready
-                && (ifi->ifi_flags & IFF_LOOPBACK) == 0;
+                && ((ifi->ifi_flags & IFF_LOOPBACK) == 0
+                    || nm->monitor_loopback);
 }
 
 /**
@@ -652,7 +725,7 @@ static void handle_link(uint16_t type,
 
         switch (type) {
         case RTM_NEWLINK:
-                if (is_interface_ready(ifi))
+                if (is_interface_ready(nm, ifi))
                         update_link(ifi, len, nm);
                 else
                         remove_link(ifi, nm);  // Interface disabled.
@@ -676,13 +749,13 @@ static void handle_link(uint16_t type,
  */
 static void notify_new_address(void *data, void *user_data)
 {
-        struct nm_ops_info            *const info = data;
-        struct mptcpd_nm_ops    const *const ops  = info->ops;
-        struct mptcpd_addr_info const *const ai   = user_data;
+        struct nm_ops_info         *const info = data;
+        struct mptcpd_nm_ops const *const ops  = info->ops;
+        struct nm_addr_info  const *const ai   = user_data;
 
         if (ops->new_address)
                 ops->new_address(ai->interface,
-                                 ai->address,
+                                 (struct sockaddr const *)&ai->address,
                                  info->user_data);
 }
 
@@ -694,13 +767,13 @@ static void notify_new_address(void *data, void *user_data)
  */
 static void notify_delete_address(void *data, void *user_data)
 {
-        struct nm_ops_info            *const info = data;
-        struct mptcpd_nm_ops    const *const ops  = info->ops;
-        struct mptcpd_addr_info const *const ai   = user_data;
+        struct nm_ops_info         *const info = data;
+        struct mptcpd_nm_ops const *const ops  = info->ops;
+        struct nm_addr_info  const *const ai   = user_data;
 
         if (ops->delete_address)
                 ops->delete_address(ai->interface,
-                                    ai->address,
+                                    (struct sockaddr const *)&ai->address,
                                     info->user_data);
 }
 
@@ -710,26 +783,31 @@ static void notify_delete_address(void *data, void *user_data)
  * @param[in] interface @c mptcpd network interface information.
  * @param[in] rtm_addr  New network address information.
  *
- * @return Inserted @c sockaddr object corresponding to the new
+ * @return Inserted @c nm_addr_info object corresponding to the new
  *         network address.
  */
-static struct sockaddr *
+static struct nm_addr_info *
 insert_addr_return(struct mptcpd_interface *interface,
                    struct mptcpd_rtm_addr const *rtm_addr)
 {
-        struct sockaddr *addr = mptcpd_sockaddr_create(rtm_addr);
+        struct nm_addr_info *addr = mptcpd_addr_create(rtm_addr);
 
         if (addr == NULL
             || !l_queue_insert(interface->addrs,
                                addr,
-                               mptcpd_sockaddr_compare,
+                               mptcpd_addr_compare,
                                NULL)) {
-                mptcpd_sockaddr_destroy(addr);
+                mptcpd_addr_put(addr);
                 addr = NULL;
 
                 l_error("Unable to track internet address information.");
+
+                return addr;
         }
 
+        addr->index = interface->index;
+        addr->interface = interface;
+        addr->index = interface->index;
         return addr;
 }
 
@@ -758,6 +836,198 @@ static void insert_addr(struct mptcpd_nm *nm,
         (void) insert_addr_return(interface, rtm_addr);
 }
 
+static size_t raw_add_attr(struct rtattr *attr, unsigned short type,
+                           void const *data, size_t len)
+{
+        attr->rta_type = type;
+        attr->rta_len = RTA_LENGTH(len);
+        memcpy(RTA_DATA(attr), data, len);
+
+        return RTA_SPACE(len);
+}
+
+static size_t add_attr_u32(void *buf, unsigned short type, uint32_t value)
+{
+        return raw_add_attr(buf, type, &value, sizeof(uint32_t));
+}
+
+static size_t add_attr_address(void *buf,
+                               unsigned short type,
+                               bool is_ipv4,
+                               void const *addr)
+{
+        return raw_add_attr(buf, type, addr,
+                            is_ipv4
+                            ? sizeof(struct in_addr)
+                            : sizeof(struct in6_addr));
+}
+
+static void check_default_route(struct nm_addr_info *ai);
+
+static void handle_rtm_timeout(struct l_timeout *timeout,
+                               void *user_data)
+{
+        struct nm_addr_info *ai = user_data;
+
+        (void) timeout;
+        check_default_route(ai);
+}
+
+#define MPTCPD_MAX_ROUTE_CHECK          3
+
+static void schedule_route_check(struct nm_addr_info *ai)
+{
+        if (ai->attempts++ > MPTCPD_MAX_ROUTE_CHECK) {
+                char str[INET6_ADDRSTRLEN];
+
+                l_debug("timeout while waiting for "
+                        "default route on address %s",
+                        mptcpd_addr_to_string(ai, str, INET6_ADDRSTRLEN));
+                mptcpd_addr_put(ai);
+                return;
+        }
+
+        if (!ai->timeout) {
+                ai->timeout =
+                        l_timeout_create_ms(1,
+                                            handle_rtm_timeout,
+                                            ai,
+                                            NULL);
+
+                if (!ai->timeout) {
+                        l_error("can't arm route re-check timeout");
+                        mptcpd_addr_put(ai);
+                }
+        } else {
+                /* Use exponential backoff */
+                l_timeout_modify_ms(ai->timeout, 1 << ai->attempts);
+        }
+}
+
+static void handle_rtm_getroute(int error,
+                                uint16_t type,
+                                void const *data,
+                                uint32_t len,
+                                void *user_data)
+{
+        struct nm_addr_info *ai = user_data;
+        char str[INET6_ADDRSTRLEN];
+        uint32_t ifindex = 0;
+        char *dst = NULL;
+
+        if (error != 0) {
+                l_info("can't resolved default route "
+                       "from %s interface %d: %d",
+                       mptcpd_addr_to_string(ai, str, INET6_ADDRSTRLEN),
+                       ai->index,
+                       error);
+                goto again;
+        }
+
+        (void) type;
+        assert(type == RTM_NEWROUTE);
+
+        if (ai->address.ss_family == AF_INET) {
+                l_rtnl_route4_extract(data,
+                                      len,
+                                      NULL,
+                                      &ifindex,
+                                      &dst,
+                                      NULL,
+                                      NULL);
+        } else {
+                l_rtnl_route6_extract(data,
+                                      len,
+                                      NULL,
+                                      &ifindex,
+                                      &dst,
+                                      NULL,
+                                      NULL);
+        }
+
+        if (dst)
+                goto bad_dst;
+
+        if ((int)ifindex != ai->index) {
+                l_info("interface mismatch %d:%d", ifindex, ai->index);
+                goto again;
+        }
+
+        /* default route found! try to notify address*/
+        mptcpd_addr_cancel_timeout(ai);
+
+        /* this happens asincronusly, remove_link() could have delete
+         * the relevant interface, re-check it
+         */
+        ai->interface = l_queue_find(ai->nm->interfaces,
+                                     mptcpd_interface_match,
+                                     &ai->index);
+
+        l_info("found default route for address %s on interface %d",
+               mptcpd_addr_to_string(ai, str, INET6_ADDRSTRLEN), ai->index);
+
+        if (ai->interface)
+                l_queue_foreach(ai->nm->ops,
+                                notify_new_address,
+                                ai);
+
+        mptcpd_addr_put(ai);
+
+        return;
+
+bad_dst:
+        l_info("found non-default route with destination %s",
+               dst ? dst : "");
+
+again:
+        schedule_route_check(ai);
+}
+
+static void check_default_route(struct nm_addr_info *ai)
+{
+        bool const is_ipv4 = ai->address.ss_family == AF_INET;
+
+        struct {
+                struct rtmsg route_msg;
+                char buf[1024];
+        } store = {
+                .route_msg = {
+                        .rtm_family  = ai->address.ss_family,
+                        .rtm_flags   = RTM_F_LOOKUP_TABLE | RTM_F_FIB_MATCH,
+                        .rtm_dst_len = is_ipv4 ? 32: 128
+                }
+        };
+
+        char *buf = (char *) &store + NLMSG_ALIGN(sizeof(struct rtmsg));
+        buf += add_attr_u32(buf, RTA_OIF, ai->index);
+
+        void const *addr = &test_net_v6;
+
+        if (is_ipv4)
+                addr = &test_net_v4;
+
+        buf += add_attr_address(buf, RTA_DST, is_ipv4, addr);
+
+        /*
+          An address delete event can attempt to free this addr info
+          before we get the route reply.  Acquire a reference so that
+          memory will not be released before the handler accesses it.
+         */
+        mptcpd_addr_get(ai);
+
+        if (l_netlink_send(ai->nm->rtnl,
+                           RTM_GETROUTE,
+                           0,
+                           &store,
+                           buf - (char *) &store,
+                           handle_rtm_getroute,
+                           ai,
+                           NULL) == 0) {
+                l_debug("Route lookup failed");
+                mptcpd_addr_put(ai);
+        }
+}
+
 /**
  * @brief Register or update network address with network monitor.
  *
@@ -779,9 +1049,9 @@ static void update_addr(struct mptcpd_nm *nm,
             && (rtm_addr->ifa->ifa_scope == RT_SCOPE_HOST))
                 return;
 
-        struct sockaddr *addr =
+        struct nm_addr_info *addr =
                 l_queue_find(interface->addrs,
-                             mptcpd_sockaddr_match,
+                             mptcpd_addr_match,
                              rtm_addr);
 
         if (addr == NULL) {
@@ -789,14 +1059,14 @@ static void update_addr(struct mptcpd_nm *nm,
 
                 // Notify new network interface event observers.
                 if (addr != NULL) {
-                        struct mptcpd_addr_info info = {
-                                .interface = interface,
-                                .address   = addr
-                        };
-
-                        l_queue_foreach(nm->ops,
-                                        notify_new_address,
-                                        &info);
+                        if (nm->notify_flags & MPTCPD_NOTIFY_FLAG_ROUTE_CHECK) {
+                                addr->nm = nm;
+                                check_default_route(addr);
+                        } else {
+                                l_queue_foreach(nm->ops,
+                                                notify_new_address,
+                                                addr);
+                        }
                 }
         } else {
                 /**
@@ -825,7 +1095,7 @@ static void remove_addr(struct mptcpd_nm *nm,
 {
         struct sockaddr *const addr =
                 l_queue_remove_if(interface->addrs,
-                                  mptcpd_sockaddr_match,
+                                  mptcpd_addr_match,
                                   rtm_addr);
 
         if (addr == NULL) {
@@ -836,14 +1106,9 @@ static void remove_addr(struct mptcpd_nm *nm,
                 return;
         }
 
-        struct mptcpd_addr_info info = {
-                .interface = interface,
-                .address   = addr
-        };
+        l_queue_foreach(nm->ops, notify_delete_address, addr);
 
-        l_queue_foreach(nm->ops, notify_delete_address, &info);
-
-        mptcpd_sockaddr_destroy(addr);
+        mptcpd_addr_put(addr);
 }
 
 /**
@@ -1055,7 +1320,7 @@ static void handle_rtm_getlink(int error,
         struct ifinfomsg const *const ifi = data;
         struct mptcpd_nm *const nm        = user_data;
 
-        if (is_interface_ready(ifi)) {
+        if (is_interface_ready(nm, ifi)) {
                 (void) insert_link(ifi, len, nm);
         }
 }
@@ -1196,9 +1461,10 @@ struct mptcpd_nm *mptcpd_nm_create(uint32_t flags)
                 return NULL;
         }
 
-        nm->notify_flags = flags;
-        nm->interfaces   = l_queue_new();
-        nm->ops          = l_queue_new();
+        nm->notify_flags     = flags;
+        nm->interfaces       = l_queue_new();
+        nm->ops              = l_queue_new();
+        nm->monitor_loopback = false;
 
         /**
          * Get network interface information.
@@ -1306,6 +1572,15 @@ bool mptcpd_nm_register_ops(struct mptcpd_nm *nm,
         return registered;
 }
 
+bool mptcpd_nm_monitor_loopback(struct mptcpd_nm *nm, bool enable)
+{
+        if (nm == NULL)
+                return false;
+
+        nm->monitor_loopback = enable;
+
+        return true;
+}
 
 /*
   Local Variables:

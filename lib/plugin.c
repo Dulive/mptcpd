@@ -4,7 +4,7 @@
  *
  * @brief Common path manager plugin functions.
  *
- * Copyright (c) 2018-2021, Intel Corporation
+ * Copyright (c) 2018-2022, Intel Corporation
  */
 
 #ifdef HAVE_CONFIG_H
@@ -20,10 +20,13 @@
 #include <unistd.h>
 #include <assert.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <ell/queue.h>
 #include <ell/hashmap.h>
 #include <ell/util.h>
 #include <ell/log.h>
+#pragma GCC diagnostic pop
 
 /**
  * @todo Remove this preprocessor symbol definition once support for
@@ -328,6 +331,78 @@ static void load_plugin(char const *filename)
         */
 }
 
+static void load_plugins_queue(char const *dir,
+                               struct l_queue const* plugins_to_load)
+{
+        struct l_queue_entry const *entry = 
+                l_queue_get_entries((struct l_queue *) plugins_to_load);
+
+        while (entry) {
+                char const *const plugin_name = (char *) entry->data;
+                char *const path = l_strdup_printf("%s/%s.so",
+                                                   dir,
+                                                   plugin_name);
+
+                /*
+                   No need to verify if the file exists or if it's
+                   readable since the dlopen() call in load_plugin()
+                   returns NULL if it's not the case. Additional
+                   verification, using for example access(), would only
+                   introduce a TOCTOU race condition.
+                 */
+                load_plugin(path);
+
+                l_free(path);
+
+                entry = entry->next;
+        }
+}
+
+static int load_plugins_all(int const fd,
+                            char const *dir)
+{
+        DIR *const ds = fdopendir(fd);
+
+        if (ds == NULL) {
+                report_error(errno,
+                             "fdopendir() on plugin directory failed");
+
+                return -1;
+        }
+
+        errno = 0;
+        for (struct dirent const *d = readdir(ds);
+             d != NULL;
+             d = readdir(ds)) {
+                if ((d->d_type == DT_REG || d->d_type == DT_UNKNOWN)
+                    && l_str_has_suffix(d->d_name, ".so")) {
+                        char *const path = l_strdup_printf("%s/%s",
+                                                           dir,
+                                                           d->d_name);
+
+                        load_plugin(path);
+                        l_free(path);
+                }
+
+                // Reset to detect error on NULL readdir().
+                errno = 0;
+        }
+
+        int const error = errno;
+
+        (void) closedir(ds);
+
+        /**
+         * @todo Should a readdir() error from above be considered
+         *       fatal?
+         */
+        if (error != 0)
+                report_error(error, "Error during plugin directory read");
+
+        return error;
+}
+
+
 static int load_plugins(char const *dir, 
                         struct l_queue const *plugins_to_load, 
                         struct mptcpd_pm *pm)
@@ -354,75 +429,24 @@ static int load_plugins(char const *dir,
                 return -1;
         }
 
-        DIR *const ds = fdopendir(fd);
+        int ret = 0;
 
-        if (ds == NULL) {
-                report_error(errno,
-                             "fdopendir() on plugin directory failed");
-
-                return -1;
-        }
-
-        errno = 0;
         if (plugins_to_load) {
-
-                struct l_queue_entry const *entry = 
-                        l_queue_get_entries(
-                                (struct l_queue *) plugins_to_load);
-
-                while (entry) {
-                        char *plugin_name = (char *) entry->data;
-                        char *const path = l_strdup_printf("%s/%s.so",
-                                                           dir,
-                                                           plugin_name);
-
-                        if (access(path, R_OK) == 0)
-                                load_plugin(path);
-                        else
-                                l_warn("Plugin %s does not exist.",
-                                       plugin_name);
-
-                        l_free(path);
-
-                        errno = 0;
-
-                        entry = entry->next;
-                }
-
+                load_plugins_queue(dir, plugins_to_load);
+                (void) close(fd);
         } else {
-                for (struct dirent const *d = readdir(ds);
-                     d != NULL;
-                     d = readdir(ds)) {
-                        if ((d->d_type == DT_REG || d->d_type == DT_UNKNOWN)
-                            && l_str_has_suffix(d->d_name, ".so")) {
-                                char *const path = l_strdup_printf("%s/%s",
-                                                                   dir,
-                                                                   d->d_name);
-
-                                load_plugin(path);
-                                l_free(path);
-                        }
-
-                        // Reset to detect error on NULL readdir().
-                        errno = 0;
-                }
+                ret = load_plugins_all(fd, dir);
+                /*
+                  No need call close() since the fdopendir() call in
+                  load_plugins_all() claims ownership of the file
+                  descriptor.  There is no ref count bump.
+                */
         }
-
-        int const error = errno;
-
-        (void) closedir(ds);
-
-        /**
-         * @todo Should a readdir() error from above be considered
-         *       fatal?
-         */
-        if (error != 0)
-                report_error(error, "Error during plugin directory read");
 
         // Initialize all loaded plugins.
         l_queue_foreach_remove(_plugin_infos, init_plugin, pm);
 
-        return error;  // 0 on success
+        return ret;  // 0 on success
 }
 
 static void unload_plugins(struct mptcpd_pm *pm)
@@ -577,6 +601,7 @@ void mptcpd_plugin_new_connection(char const *name,
                                   mptcpd_token_t token,
                                   struct sockaddr const *laddr,
                                   struct sockaddr const *raddr,
+                                  bool server_side,
                                   struct mptcpd_pm *pm)
 {
         struct mptcpd_plugin_ops const *const ops = name_to_ops(name);
@@ -588,18 +613,23 @@ void mptcpd_plugin_new_connection(char const *name,
                 l_error("Unable to map connection to plugin.");
 
         if (ops && ops->new_connection)
-                ops->new_connection(token, laddr, raddr, pm);
+                ops->new_connection(token, laddr, raddr, server_side, pm);
 }
 
 void mptcpd_plugin_connection_established(mptcpd_token_t token,
                                           struct sockaddr const *laddr,
                                           struct sockaddr const *raddr,
+                                          bool server_side,
                                           struct mptcpd_pm *pm)
 {
         struct mptcpd_plugin_ops const *const ops = token_to_ops(token);
 
         if (ops && ops->connection_established)
-                ops->connection_established(token, laddr, raddr, pm);
+                ops->connection_established(token,
+                                            laddr,
+                                            raddr,
+                                            server_side,
+                                            pm);
 }
 
 void mptcpd_plugin_connection_closed(mptcpd_token_t token,

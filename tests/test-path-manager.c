@@ -7,16 +7,16 @@
  * Copyright (c) 2019-2021, Intel Corporation
  */
 
-#undef NDEBUG
-#include <assert.h>
-
 #include <unistd.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <ell/main.h>
 #include <ell/genl.h>
 #include <ell/timeout.h>
 #include <ell/util.h>      // Needed by <ell/log.h>
 #include <ell/log.h>
+#pragma GCC diagnostic pop
 
 #include "test-util.h"
 
@@ -24,6 +24,10 @@
 #include <mptcpd/private/configuration.h>  // INTERNAL!
 #include <mptcpd/private/path_manager.h>   // INTERNAL!
 #include <mptcpd/path_manager.h>
+
+#undef NDEBUG
+#include <assert.h>
+
 
 // -------------------------------------------------------------------
 
@@ -75,23 +79,39 @@ static struct mptcpd_pm_ops const pm_ops = {
         .not_ready = pm_not_ready
 };
 
+static struct mptcpd_pm_ops const bad_pm_ops = {
+        .ready     = NULL,
+        .not_ready = NULL
+};
+
 // -------------------------------------------------------------------
 
 static void test_pm_create(void const *test_data)
 {
         struct test_info *const info = (struct test_info *) test_data;
 
-        info->pm = mptcpd_pm_create(info->config);
+        struct mptcpd_pm *const pm = mptcpd_pm_create(info->config);
 
-        assert(info->pm       != NULL);
-        assert(info->pm->genl != NULL);
-        assert(info->pm->nm   != NULL);
+        assert(pm            != NULL);
+        assert(pm->config    != NULL);
+        assert(pm->genl      != NULL);
+        assert(pm->timeout   != NULL);
+        assert(pm->nm        != NULL);
+        assert(pm->idm       != NULL);
+        assert(pm->lm        != NULL);
+        assert(pm->event_ops != NULL);
+
+        assert(mptcpd_pm_get_nm(pm)  == pm->nm);
+        assert(mptcpd_pm_get_idm(pm) == pm->idm);
+        assert(mptcpd_pm_get_lm(pm)  == pm->lm);
 
         /*
           Other struct mptcpd_pm fields may not have been initialized
           yet since they depend on the existence of the "mptcp"
           generic netlink family.
         */
+
+        info->pm = pm;
 }
 
 static void test_pm_register_ops(void const *test_data)
@@ -101,7 +121,11 @@ static void test_pm_register_ops(void const *test_data)
         bool const registered =
                 mptcpd_pm_register_ops(info->pm, &pm_ops, info);
 
+        bool const not_registered =
+                !mptcpd_pm_register_ops(info->pm, &bad_pm_ops, info);
+
         assert(registered);
+        assert(not_registered);
 }
 
 static void test_pm_destroy(void const *test_data)
@@ -151,6 +175,9 @@ static void timeout_callback(struct l_timeout *timeout,
 
 int main(void)
 {
+        // Skip this test if the kernel is not MPTCP capable.
+        tests_skip_if_no_mptcp();
+
         if (!l_main_init())
                 return -1;
 
