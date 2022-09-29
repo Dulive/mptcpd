@@ -70,7 +70,7 @@ static void update_limits(struct mptcpd_pm *pm, int delta)
                 l_warn("can't update limit to %d: %d", subflows, result);
 }
 
-static void addr_adv_new_local_address(struct mptcpd_interface const *i,
+static bool addr_adv_new_local_address(struct mptcpd_interface const *i,
                                        struct sockaddr const *sa,
                                        struct mptcpd_pm *pm)
 {
@@ -79,7 +79,7 @@ static void addr_adv_new_local_address(struct mptcpd_interface const *i,
 
         if (id == 0) {
                 l_error("Unable to map addr to ID.");
-                return;
+                return true;
         }
 
         uint32_t       const flags = pm->config->addr_flags;
@@ -88,9 +88,11 @@ static void addr_adv_new_local_address(struct mptcpd_interface const *i,
 
         if (mptcpd_kpm_add_addr(pm, sa, id, flags, i->index) != 0)
                 l_error("Unable to advertise IP address.");
+
+        return true;
 }
 
-static void addr_adv_delete_local_address(
+static bool addr_adv_delete_local_address(
         struct mptcpd_interface const *i,
         struct sockaddr const *sa,
         struct mptcpd_pm *pm)
@@ -103,13 +105,15 @@ static void addr_adv_delete_local_address(
         if (id == 0) {
                 // Not necessarily an error.
                 l_info("No address ID associated with addr.");
-                return;
+                return true;
         }
 
         update_limits(pm, -1);
 
         if (mptcpd_kpm_remove_addr(pm, id) != 0)
                 l_error("Unable to stop advertising IP address.");
+
+        return true;
 }
 
 static struct mptcpd_plugin_ops const pm_ops = {

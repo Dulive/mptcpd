@@ -113,43 +113,48 @@ static void plugin_noop_subflow_priority(mptcpd_token_t token,
         (void) pm;
 }
 
-void plugin_noop_new_interface(struct mptcpd_interface const *i,
+bool plugin_noop_new_interface(struct mptcpd_interface const *i,
                                struct mptcpd_pm *pm)
 {
         (void) i;
         (void) pm;
+        return true;
 }
 
-void plugin_noop_update_interface(struct mptcpd_interface const *i,
+bool plugin_noop_update_interface(struct mptcpd_interface const *i,
                                   struct mptcpd_pm *pm)
 {
         (void) i;
         (void) pm;
+        return true;
 }
 
-void plugin_noop_delete_interface(struct mptcpd_interface const *i,
+bool plugin_noop_delete_interface(struct mptcpd_interface const *i,
                                   struct mptcpd_pm *pm)
 {
         (void) i;
         (void) pm;
+        return true;
 }
 
-void plugin_noop_new_local_address(struct mptcpd_interface const *i,
+bool plugin_noop_new_local_address(struct mptcpd_interface const *i,
                                    struct sockaddr const *sa,
                                    struct mptcpd_pm *pm)
 {
         (void) i;
         (void) sa;
         (void) pm;
+        return true;
 }
 
-void plugin_noop_delete_local_address(struct mptcpd_interface const *i,
+bool plugin_noop_delete_local_address(struct mptcpd_interface const *i,
                                       struct sockaddr const *sa,
                                       struct mptcpd_pm *pm)
 {
         (void) i;
         (void) sa;
         (void) pm;
+        return true;
 }
 
 static struct mptcpd_plugin_ops const pm_ops = {
