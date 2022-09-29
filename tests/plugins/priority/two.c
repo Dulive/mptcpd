@@ -160,34 +160,37 @@ static void plugin_two_subflow_priority(mptcpd_token_t token,
         ++call_count.subflow_priority;
 }
 
-void plugin_two_new_interface(struct mptcpd_interface const *i,
+bool plugin_two_new_interface(struct mptcpd_interface const *i,
                               struct mptcpd_pm *pm)
 {
         (void) i;
         (void) pm;
 
         ++call_count.new_interface;
+        return true;
 }
 
-void plugin_two_update_interface(struct mptcpd_interface const *i,
+bool plugin_two_update_interface(struct mptcpd_interface const *i,
                                  struct mptcpd_pm *pm)
 {
         (void) i;
         (void) pm;
 
         ++call_count.update_interface;
+        return true;
 }
 
-void plugin_two_delete_interface(struct mptcpd_interface const *i,
+bool plugin_two_delete_interface(struct mptcpd_interface const *i,
                                  struct mptcpd_pm *pm)
 {
         (void) i;
         (void) pm;
 
         ++call_count.delete_interface;
+        return true;
 }
 
-void plugin_two_new_local_address(struct mptcpd_interface const *i,
+bool plugin_two_new_local_address(struct mptcpd_interface const *i,
                                   struct sockaddr const *sa,
                                   struct mptcpd_pm *pm)
 {
@@ -196,9 +199,10 @@ void plugin_two_new_local_address(struct mptcpd_interface const *i,
         (void) pm;
 
         ++call_count.new_local_address;
+        return true;
 }
 
-void plugin_two_delete_local_address(struct mptcpd_interface const *i,
+bool plugin_two_delete_local_address(struct mptcpd_interface const *i,
                                      struct sockaddr const *sa,
                                      struct mptcpd_pm *pm)
 {
@@ -207,6 +211,7 @@ void plugin_two_delete_local_address(struct mptcpd_interface const *i,
         (void) pm;
 
         ++call_count.delete_local_address;
+        return true;
 }
 
 static struct mptcpd_plugin_ops const pm_ops = {
