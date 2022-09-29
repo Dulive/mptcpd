@@ -570,8 +570,6 @@ bool mptcpd_plugin_register_ops(char const *name,
         if (info == NULL)
                 return false;
 
-        //ugly
-        //very dumb
         struct mptcpd_plugin_ops **ops_addr = 
                 (struct mptcpd_plugin_ops **)&info->ops;
         *ops_addr = (struct mptcpd_plugin_ops *) ops;
@@ -587,7 +585,7 @@ bool mptcpd_plugin_register_ops(char const *name,
         */
         if (strcmp(_default_name, name) == 0)
                 _default_ops = ops;
-        else if (l_queue_peek_head(_plugin_infos) == info) //dumb
+        else if (l_queue_peek_head(_plugin_infos) == info)
                 _default_ops = ops;
 
         return true;
